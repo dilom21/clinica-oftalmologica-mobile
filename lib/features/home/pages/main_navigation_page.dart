@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 
-import '../inicio/inicio_page.dart';
-import '../citas/citas_page.dart';
-import '../perfil/perfil_page.dart';
+import 'inicio_page.dart';
+import '../../citas/pages/citas_page.dart';
+import '../../perfil_paciente/pages/perfil_page.dart';
 
 /// Contenedor principal del área autenticada (pacientes).
 ///

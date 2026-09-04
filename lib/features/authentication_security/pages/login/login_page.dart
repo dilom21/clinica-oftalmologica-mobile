@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import '../../models/auth_models.dart';
 import '../../services/auth_service.dart';
 import '../../../../core/storage/token_storage.dart';
-import '../panel/main_navigation_page.dart';
+import '../../../home/pages/main_navigation_page.dart';
 import '../register/register_page.dart';
 
 /// Pantalla de inicio de sesión de la aplicación

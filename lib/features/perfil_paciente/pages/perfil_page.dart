@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 
-import '../../../../core/storage/token_storage.dart';
-import '../../models/mi_perfil_paciente.dart';
-import '../../services/paciente_service.dart';
-import '../login/login_page.dart';
+import '../../../core/storage/token_storage.dart';
+import '../models/mi_perfil_paciente.dart';
+import '../services/paciente_service.dart';
+import '../../authentication_security/pages/login/login_page.dart';
 
 /// Perfil del paciente autenticado (SOLO LECTURA).
 ///
