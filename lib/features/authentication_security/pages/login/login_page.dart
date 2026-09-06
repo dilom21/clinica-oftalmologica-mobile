@@ -19,18 +19,23 @@ import '../register/register_page.dart';
 /// - Validaciones locales del formulario
 /// - Estado de carga mientras se consulta FastAPI
 ///
-/// NOTA: El login usa el endpoint exclusivo de pacientes
-/// `POST /seguridad/login/paciente`. Con un login exitoso se guarda el JWT
-/// (TokenStorage) y se navega a MainNavigationPage.
+/// NOTA: El login consume el endpoint general `POST /seguridad/login`.
+/// Como la app es exclusiva de pacientes, AuthService solo devuelve la
+/// sesión si el JWT trae `rol_id == 4`. Con un login exitoso se guarda el
+/// JWT (TokenStorage) y se navega a MainNavigationPage.
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
+  const LoginPage({super.key, this.authService});
+
+  /// Servicio de autenticación inyectable (usado por las pruebas).
+  ///
+  /// Si no se provee, la pantalla crea su propio [AuthService].
+  final AuthService? authService;
 
   @override
   State<LoginPage> createState() => _LoginPageState();
 }
 
-class _LoginPageState extends State<LoginPage>
-    with TickerProviderStateMixin {
+class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
   // Controla el formulario y sus validaciones.
   final _formKey = GlobalKey<FormState>();
 
@@ -47,7 +52,7 @@ class _LoginPageState extends State<LoginPage>
   bool _isLoading = false;
 
   // Servicio que se comunica con el backend FastAPI.
-  final AuthService _authService = AuthService();
+  late final AuthService _authService = widget.authService ?? AuthService();
 
   // Controla la animación de entrada escalonada (se ejecuta una sola vez).
   late final AnimationController _entranceController = AnimationController(
@@ -104,19 +109,25 @@ class _LoginPageState extends State<LoginPage>
   );
 
   // El logo entra con una escala suave (0.92 -> 1.0).
-  late final Animation<double> _logoScale =
-      Tween<double>(begin: 0.92, end: 1.0).animate(_logoEntrance);
+  late final Animation<double> _logoScale = Tween<double>(
+    begin: 0.92,
+    end: 1.0,
+  ).animate(_logoEntrance);
 
   // El botón reacciona al presionarlo: 1.0 -> 0.98 -> 1.0.
   late final Animation<double> _buttonScale = TweenSequence<double>([
     TweenSequenceItem(
-      tween: Tween<double>(begin: 1.0, end: 0.98)
-          .chain(CurveTween(curve: Curves.easeOut)),
+      tween: Tween<double>(
+        begin: 1.0,
+        end: 0.98,
+      ).chain(CurveTween(curve: Curves.easeOut)),
       weight: 50,
     ),
     TweenSequenceItem(
-      tween: Tween<double>(begin: 0.98, end: 1.0)
-          .chain(CurveTween(curve: Curves.easeOut)),
+      tween: Tween<double>(
+        begin: 0.98,
+        end: 1.0,
+      ).chain(CurveTween(curve: Curves.easeOut)),
       weight: 50,
     ),
   ]).animate(_buttonController);
@@ -166,8 +177,10 @@ class _LoginPageState extends State<LoginPage>
 
   /// Llama a AuthService.loginPaciente() contra FastAPI.
   ///
-  /// Con un login exitoso guarda el access_token con TokenStorage y navega a
-  /// InicioPage eliminando LoginPage del historial.
+  /// AuthService solo devuelve una sesión cuando el usuario autenticado es
+  /// paciente (`rol_id == 4`). Con un login exitoso guarda el access_token
+  /// con TokenStorage y navega a MainNavigationPage eliminando LoginPage del
+  /// historial. Si el usuario no es paciente, no se guarda ningún token.
   Future<void> _login() async {
     setState(() {
       _isLoading = true;
@@ -179,8 +192,7 @@ class _LoginPageState extends State<LoginPage>
     );
 
     try {
-      final LoginResponse response =
-          await _authService.loginPaciente(request);
+      final LoginResponse response = await _authService.loginPaciente(request);
 
       // Guardar el JWT de forma segura antes de navegar.
       await TokenStorage().saveToken(response.accessToken);
@@ -195,6 +207,11 @@ class _LoginPageState extends State<LoginPage>
         (route) => false,
       );
     } on AuthException catch (error) {
+      // Si quien se autenticó no es paciente, se descarta cualquier token.
+      if (error.message == AuthService.mensajeSoloParaPacientes) {
+        await TokenStorage().deleteToken();
+      }
+
       if (!mounted) return;
       setState(() {
         _isLoading = false;
@@ -214,14 +231,10 @@ class _LoginPageState extends State<LoginPage>
   /// Navega a RegisterPage y, al volver, precarga el correo registrado.
   Future<void> _openRegister() async {
     final correoRegistrado = await Navigator.of(context).push<String>(
-      MaterialPageRoute<String>(
-        builder: (_) => const RegisterPage(),
-      ),
+      MaterialPageRoute<String>(builder: (_) => const RegisterPage()),
     );
 
-    if (correoRegistrado != null &&
-        correoRegistrado.isNotEmpty &&
-        mounted) {
+    if (correoRegistrado != null && correoRegistrado.isNotEmpty && mounted) {
       _emailController.text = correoRegistrado;
     }
   }
@@ -283,9 +296,8 @@ class _LoginPageState extends State<LoginPage>
             Text(
               'Centro Oftalmológico',
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                color: const Color(0xFF547799),
-              ),
+              style: Theme.of(context).textTheme.titleMedium
+                  ?.copyWith(color: const Color(0xFF547799)),
             ),
           ],
         ),
@@ -319,9 +331,7 @@ class _LoginPageState extends State<LoginPage>
               decoration: BoxDecoration(
                 color: Colors.white.withValues(alpha: 0.78),
                 borderRadius: BorderRadius.circular(28),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.6),
-                ),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.6)),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -334,23 +344,15 @@ class _LoginPageState extends State<LoginPage>
                         Text(
                           'Iniciar sesión',
                           textAlign: TextAlign.center,
-                          style: Theme.of(context)
-                              .textTheme
-                              .headlineSmall
-                              ?.copyWith(
-                                fontWeight: FontWeight.bold,
-                              ),
+                          style: Theme.of(context).textTheme.headlineSmall
+                              ?.copyWith(fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 6),
                         Text(
                           'Ingresa tus credenciales para continuar',
                           textAlign: TextAlign.center,
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodyMedium
-                              ?.copyWith(
-                                color: const Color(0xFF5C6F80),
-                              ),
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(color: const Color(0xFF5C6F80)),
                         ),
                       ],
                     ),
@@ -441,7 +443,7 @@ class _LoginPageState extends State<LoginPage>
           ),
         ),
       ),
-    );  
+    );
   }
 
   /// Campo de correo electrónico.
@@ -637,13 +639,8 @@ class _LoginPageState extends State<LoginPage>
         side: const BorderSide(color: Color(0xFF1976D2), width: 1.4),
         backgroundColor: Colors.white.withValues(alpha: 0.55),
         minimumSize: const Size.fromHeight(52),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-        ),
-        textStyle: const TextStyle(
-          fontSize: 15,
-          fontWeight: FontWeight.w600,
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
       ),
     );
   }
