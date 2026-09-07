@@ -39,19 +39,20 @@ class AuthService {
   static const String mensajeSoloParaPacientes =
       'Esta aplicación móvil está disponible únicamente para pacientes.';
 
-  /// Inicio de sesión contra el endpoint general del backend:
+  /// Inicio de sesión móvil contra el endpoint exclusivo de pacientes:
   ///
-  /// `POST {ApiConfig.baseUrl}/seguridad/login`
+  /// `POST {ApiConfig.baseUrl}/seguridad/login/paciente`
   ///
-  /// Como la app móvil es exclusiva de pacientes, se acepta la sesión
-  /// únicamente si el payload del JWT devuelto trae `rol_id == 4`.
+  /// El backend rechaza con 403 a los roles internos (Administrador,
+  /// Oftalmólogo, Recepcionista, etc.). Como refuerzo, la app solo acepta la
+  /// sesión si el payload del JWT devuelto trae `rol_id == 4`.
   ///
   /// Devuelve un [LoginResponse] solo cuando FastAPI responde 200 y el
   /// usuario autenticado es un paciente. En cualquier otro caso lanza
   /// [AuthException] y NO se devuelve token alguno.
   Future<LoginResponse> loginPaciente(LoginRequest request) async {
     final http.Response response = await _post(
-      '/seguridad/login',
+      '/seguridad/login/paciente',
       request.toJson(),
     );
 

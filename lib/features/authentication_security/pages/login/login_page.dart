@@ -19,10 +19,11 @@ import '../register/register_page.dart';
 /// - Validaciones locales del formulario
 /// - Estado de carga mientras se consulta FastAPI
 ///
-/// NOTA: El login consume el endpoint general `POST /seguridad/login`.
-/// Como la app es exclusiva de pacientes, AuthService solo devuelve la
-/// sesión si el JWT trae `rol_id == 4`. Con un login exitoso se guarda el
-/// JWT (TokenStorage) y se navega a MainNavigationPage.
+/// NOTA: El login consume el endpoint móvil exclusivo de pacientes
+/// `POST /seguridad/login/paciente`. El backend rechaza con 403 a los roles
+/// internos; AuthService además exige que el JWT traiga `rol_id == 4`.
+/// Con un login exitoso se guarda el JWT (TokenStorage) y se navega a
+/// MainNavigationPage.
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key, this.authService});
 
