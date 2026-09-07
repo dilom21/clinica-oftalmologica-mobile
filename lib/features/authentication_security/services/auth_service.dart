@@ -30,28 +30,29 @@ class AuthService {
   /// Tiempo máximo de espera para una respuesta del servidor.
   static const Duration _timeout = Duration(seconds: 20);
 
-/// Inicio de sesión para pacientes:
-///
-/// `POST {ApiConfig.baseUrl}/seguridad/login`
-Future<LoginResponse> loginPaciente(LoginRequest request) async {
-  // Se cambia '/seguridad/login/paciente' por '/seguridad/login'
-  final http.Response response =
+  /// Inicio de sesión exclusivo para pacientes:
+  ///
+  /// `POST {ApiConfig.baseUrl}/seguridad/login`
+  ///
+  /// Devuelve un [LoginResponse] si FastAPI responde 200.
+  Future<LoginResponse> loginPaciente(LoginRequest request) async {
+    final http.Response response =
       await _post('/seguridad/login', request.toJson());
 
-  if (response.statusCode == 200) {
-    final Map<String, dynamic> body = _decodificarObjeto(response);
+    if (response.statusCode == 200) {
+      final Map<String, dynamic> body = _decodificarObjeto(response);
 
-    try {
-      return LoginResponse.fromJson(body);
-    } on TypeError {
-      throw const AuthException(
-        'La respuesta del servidor no contiene el access_token esperado.',
-      );
+      try {
+        return LoginResponse.fromJson(body);
+      } on TypeError {
+        throw const AuthException(
+          'La respuesta del servidor no contiene el access_token esperado.',
+        );
+      }
     }
-  }
 
-  throw AuthException(_mensajeError(response));
-}
+    throw AuthException(_mensajeError(response));
+  }
 
   /// Registro de una cuenta de paciente desde la app móvil:
   ///

@@ -102,14 +102,8 @@ class PacienteService {
     );
   }
 
-  /// Actualiza la información personal del paciente autenticado:
-  ///
-  /// `PUT {ApiConfig.baseUrl}/pacientes/me`
-  ///
-  /// Envía únicamente los campos permitidos y el JWT en la cabecera.
-  /// Devuelve el perfil actualizado si la respuesta es 200.
-  Future<MiPerfilPaciente> actualizarPerfilPropio(
-    ActualizarPerfilRequest request,
+  Future<MiPerfilPaciente> actualizarMiPerfil(
+    MiPerfilPacienteActualizar datos,
   ) async {
     final token = await TokenStorage().getToken();
 
@@ -121,7 +115,6 @@ class PacienteService {
     }
 
     http.Response response;
-
     try {
       response = await _client
           .put(
@@ -131,7 +124,7 @@ class PacienteService {
               'Content-Type': 'application/json',
               'Accept': 'application/json',
             },
-            body: jsonEncode(request.toJson()),
+            body: jsonEncode(datos.toJson()),
           )
           .timeout(_timeout);
     } on TimeoutException {
@@ -152,11 +145,9 @@ class PacienteService {
     if (response.statusCode == 200) {
       try {
         final Object? body = jsonDecode(response.body);
-
         if (body is! Map<String, dynamic>) {
           throw const FormatException('Cuerpo de respuesta inesperado');
         }
-
         return MiPerfilPaciente.fromJson(body);
       } on FormatException {
         throw const PacienteException(
@@ -170,14 +161,14 @@ class PacienteService {
     }
 
     throw PacienteException(
-      _mensajeError(response),
+      _mensajeError(response, accion: 'actualizar'),
       statusCode: response.statusCode,
     );
   }
 
   /// Convierte el error HTTP de FastAPI en un mensaje entendible,
   /// prefiriendo siempre el campo `detail`.
-  String _mensajeError(http.Response response) {
+  String _mensajeError(http.Response response, {String accion = 'cargar'}) {
     try {
       final Object? body = jsonDecode(response.body);
 
@@ -208,11 +199,15 @@ class PacienteService {
       case 401:
         return 'Tu sesión expiró. Vuelve a iniciar sesión.';
       case 403:
-        return 'No tienes permisos para ver este perfil.';
+        return 'No tienes permisos para $accion tu perfil.';
       case 404:
         return 'No se encontró el perfil del paciente.';
+      case 409:
+        return 'Los datos entran en conflicto con otra cuenta.';
+      case 422:
+        return 'Revisa los datos ingresados.';
       default:
-        return 'No se pudo cargar tu perfil '
+        return 'No se pudo $accion tu perfil '
             '(código ${response.statusCode}). Inténtalo de nuevo.';
     }
   }

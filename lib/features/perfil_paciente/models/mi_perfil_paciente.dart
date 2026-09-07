@@ -67,8 +67,9 @@ class MiPerfilPaciente {
       nombres: json['nombres'] as String? ?? '',
       apellidos: json['apellidos'] as String? ?? '',
       ci: json['ci'] as String? ?? '',
-      fechaNacimiento:
-          fechaRaw == null ? DateTime(1900) : DateTime.parse(fechaRaw),
+      fechaNacimiento: fechaRaw == null
+          ? DateTime(1900)
+          : DateTime.parse(fechaRaw),
       sexo: sexoRaw ?? '',
       telefono: json['telefono'] as String?,
       contactoEmergencia: json['contacto_emergencia'] as String?,
@@ -78,12 +79,8 @@ class MiPerfilPaciente {
   }
 }
 
-/// Petición para actualizar el perfil del paciente.
-///
-/// Solo incluye los campos que el paciente tiene permitido modificar.
-/// Se envía a `PUT /pacientes/me`.
-class ActualizarPerfilRequest {
-  const ActualizarPerfilRequest({
+class MiPerfilPacienteActualizar {
+  const MiPerfilPacienteActualizar({
     required this.nombres,
     required this.apellidos,
     required this.fechaNacimiento,
@@ -93,28 +90,14 @@ class ActualizarPerfilRequest {
     this.direccion,
   });
 
-  /// Nombres del paciente.
   final String nombres;
-
-  /// Apellidos del paciente.
   final String apellidos;
-
-  /// Fecha de nacimiento (`YYYY-MM-DD`).
   final DateTime fechaNacimiento;
-
-  /// Sexo (`M` o `F`).
   final String sexo;
-
-  /// Teléfono.
   final String? telefono;
-
-  /// Contacto de emergencia.
   final String? contactoEmergencia;
-
-  /// Dirección.
   final String? direccion;
 
-  /// Convierte el modelo al JSON que espera FastAPI para el PUT.
   Map<String, dynamic> toJson() {
     return {
       'nombres': nombres,
