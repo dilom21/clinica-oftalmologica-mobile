@@ -62,7 +62,7 @@ void main() {
     _mockSecureStorage(almacen);
 
     final client = MockClient((request) async {
-      expect(request.url.path, '/seguridad/login');
+      expect(request.url.path, '/seguridad/login/paciente');
       return http.Response(
         jsonEncode({'access_token': _jwtConRol(1), 'token_type': 'bearer'}),
         200,

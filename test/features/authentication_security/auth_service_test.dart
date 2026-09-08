@@ -28,8 +28,9 @@ void main() {
     return AuthService(client: client);
   }
 
-  group('AuthService.loginPaciente (endpoint /seguridad/login)', () {
-    test('publica en POST /seguridad/login con correo y password', () async {
+  group('AuthService.loginPaciente (endpoint /seguridad/login/paciente)', () {
+    test('publica en POST /seguridad/login/paciente con correo y password',
+        () async {
       String? metodo;
       String? ruta;
       String? contentType;
@@ -51,7 +52,7 @@ void main() {
       );
 
       expect(metodo, 'POST');
-      expect(ruta, '/seguridad/login');
+      expect(ruta, '/seguridad/login/paciente');
       expect(contentType, startsWith('application/json'));
       expect(cuerpo, {'correo': 'paciente@correo.com', 'password': 'clave'});
       expect(login.accessToken, isNotEmpty);
