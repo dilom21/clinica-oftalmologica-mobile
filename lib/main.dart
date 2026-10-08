@@ -1,8 +1,24 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_stripe/flutter_stripe.dart';
 
+import 'core/config/stripe_config.dart';
 import 'features/authentication_security/pages/login/login_page.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Inicializa Stripe SOLO si hay una clave publicable configurada.
+  // La clave se inyecta con --dart-define (nunca se hardcodea) y no se
+  // registra en logs.
+  if (StripeConfig.estaConfigurada) {
+    try {
+      Stripe.publishableKey = StripeConfig.publishableKey.trim();
+      await Stripe.instance.applySettings();
+    } on Exception {
+      // Si falla la inicialización, el módulo Pagos lo avisa al paciente.
+    }
+  }
+
   runApp(const MyApp());
 }
 
@@ -15,9 +31,7 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Centro Oftalmológico Visión Clara',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.blue,
-        ),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
       ),
 

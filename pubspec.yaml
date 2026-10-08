@@ -38,6 +38,15 @@ dependencies:
   # Cliente HTTP para consumir el backend FastAPI.
   http: ^1.2.2
   flutter_secure_storage: 9.2.4
+  flutter_stripe: ^14.1.0
+
+  # ETAPA 8.2 — Historial y comprobantes de pago (PDF).
+  # Visor del PDF en pantalla y compartición con el menú nativo: renderiza
+  # los bytes que entrega FastAPI (no se reconstruye el comprobante en la app).
+  printing: ^5.15.1
+  # Guardar el comprobante con el selector del sistema (SAF en Android),
+  # sin solicitar permisos de almacenamiento amplios.
+  flutter_file_dialog: ^3.3.3
 
 dev_dependencies:
   flutter_test:

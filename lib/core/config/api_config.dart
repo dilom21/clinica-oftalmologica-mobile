@@ -6,6 +6,8 @@
 class ApiConfig {
   static const String baseUrl = String.fromEnvironment(
     'API_URL',
-    defaultValue: 'https://clinica-oftalmologica-api.onrender.com',
+    defaultValue: 'http://127.0.0.1:8000',
   );
 }
+
+

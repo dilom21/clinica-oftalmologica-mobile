@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'inicio_page.dart';
 import '../../citas/pages/citas_page.dart';
+import '../../pagos/pages/pagos_page.dart';
 import '../../perfil_paciente/pages/perfil_page.dart';
 
 /// Contenedor principal del área autenticada (pacientes).
@@ -9,7 +10,7 @@ import '../../perfil_paciente/pages/perfil_page.dart';
 /// Responsabilidades:
 /// - mantener UNA sola NavigationBar inferior (Material 3)
 /// - manejar el índice seleccionado
-/// - alternar entre Inicio, Citas y Perfil sin recrear las páginas
+/// - alternar entre Inicio, Citas, Pagos y Perfil sin recrear las páginas
 ///   (IndexedStack conserva su estado y evita peticiones innecesarias).
 class MainNavigationPage extends StatefulWidget {
   const MainNavigationPage({super.key});
@@ -25,16 +26,14 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
   static const List<Widget> _pages = [
     InicioPage(),
     CitasPage(),
+    PagosPage(),
     PerfilPage(),
   ];
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(
-        index: _selectedIndex,
-        children: _pages,
-      ),
+      body: IndexedStack(index: _selectedIndex, children: _pages),
       bottomNavigationBar: DecoratedBox(
         decoration: BoxDecoration(
           color: Colors.white,
@@ -51,30 +50,28 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
             backgroundColor: Colors.white,
             indicatorColor: const Color(0xFFD8ECFA),
             elevation: 0,
-            iconTheme: WidgetStateProperty.resolveWith<IconThemeData?>(
-              (states) {
-                final seleccionado = states.contains(WidgetState.selected);
-                return IconThemeData(
-                  color: seleccionado
-                      ? const Color(0xFF1976D2)
-                      : const Color(0xFF8A9BA9),
-                );
-              },
-            ),
-            labelTextStyle: WidgetStateProperty.resolveWith<TextStyle?>(
-              (states) {
-                final seleccionado = states.contains(WidgetState.selected);
-                return TextStyle(
-                  fontSize: 12,
-                  fontWeight: seleccionado
-                      ? FontWeight.w600
-                      : FontWeight.w500,
-                  color: seleccionado
-                      ? const Color(0xFF0D47A1)
-                      : const Color(0xFF6B7C8C),
-                );
-              },
-            ),
+            iconTheme: WidgetStateProperty.resolveWith<IconThemeData?>((
+              states,
+            ) {
+              final seleccionado = states.contains(WidgetState.selected);
+              return IconThemeData(
+                color: seleccionado
+                    ? const Color(0xFF1976D2)
+                    : const Color(0xFF8A9BA9),
+              );
+            }),
+            labelTextStyle: WidgetStateProperty.resolveWith<TextStyle?>((
+              states,
+            ) {
+              final seleccionado = states.contains(WidgetState.selected);
+              return TextStyle(
+                fontSize: 12,
+                fontWeight: seleccionado ? FontWeight.w600 : FontWeight.w500,
+                color: seleccionado
+                    ? const Color(0xFF0D47A1)
+                    : const Color(0xFF6B7C8C),
+              );
+            }),
           ),
           child: NavigationBar(
             selectedIndex: _selectedIndex,
@@ -94,6 +91,11 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
                 icon: Icon(Icons.calendar_month_outlined),
                 selectedIcon: Icon(Icons.calendar_month),
                 label: 'Citas',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.payments_outlined),
+                selectedIcon: Icon(Icons.payments),
+                label: 'Pagos',
               ),
               NavigationDestination(
                 icon: Icon(Icons.person_outline),
