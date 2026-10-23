@@ -1,4 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- La app consume la API del backend de la clínica: sin este permiso el
+         APK de release no puede abrir conexiones y toda petición falla con
+         "Failed host lookup". El permiso se declara en `main` para que llegue
+         a release (debug/profile ya lo traían para hot reload). -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
     <application
         android:label="clinica_oftalmologica_mobile"
         android:name="${applicationName}"

@@ -305,4 +305,44 @@ void main() {
       expect(original.map((p) => p.pagoId).toList(), [1, 2]);
     });
   });
+
+  group('métodos de pago y pasarela', () {
+    PagoHistorial pago(String metodo, {String? pasarela}) =>
+        PagoHistorial.fromJson({
+          'pago_id': 1,
+          'fecha_creacion': '2026-10-06T10:00:00',
+          'monto': '60.00',
+          'moneda': 'BOB',
+          'metodo_pago': metodo,
+          'estado_pago': 'APROBADO',
+          'pasarela': pasarela,
+          'servicios': const <Object>[],
+        });
+
+    test('traduce todos los métodos del CHECK del backend', () {
+      expect(pago('EFECTIVO').metodoPagoEtiqueta, 'Efectivo');
+      expect(pago('QR').metodoPagoEtiqueta, 'QR');
+      expect(pago('TRANSFERENCIA').metodoPagoEtiqueta, 'Transferencia');
+      expect(pago('TARJETA').metodoPagoEtiqueta, 'Tarjeta');
+      expect(pago('OTRO').metodoPagoEtiqueta, 'Otro');
+      expect(pago('').metodoPagoEtiqueta, 'No especificado');
+      // Un valor nuevo del backend se muestra tal cual, sin inventar nada.
+      expect(pago('CHEQUE').metodoPagoEtiqueta, 'CHEQUE');
+    });
+
+    test('distingue Stripe únicamente con el campo pasarela', () {
+      final presencial = pago('EFECTIVO');
+      final stripe = pago('TARJETA', pasarela: 'STRIPE');
+      final otraPasarela = pago('TARJETA', pasarela: 'OTRA');
+
+      expect(presencial.pasarelaEtiqueta, isNull);
+      expect(presencial.esStripe, isFalse);
+
+      expect(stripe.pasarelaEtiqueta, 'Stripe');
+      expect(stripe.esStripe, isTrue);
+
+      expect(otraPasarela.pasarelaEtiqueta, 'OTRA');
+      expect(otraPasarela.esStripe, isFalse);
+    });
+  });
 }

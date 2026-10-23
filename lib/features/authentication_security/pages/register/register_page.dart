@@ -4,12 +4,26 @@ import 'package:flutter/services.dart';
 import '../../models/auth_models.dart';
 import '../../services/auth_service.dart';
 
-/// Pantalla de registro de paciente de la app móvil Visión Clara.
+/// Pantalla de registro de paciente (app móvil multitenant).
 ///
-/// Envía los datos a `POST /seguridad/registro-paciente`. El backend decide si
-/// el paciente ya existía o debe crearse.
+/// Crea la cuenta con `POST /seguridad/tenant/registro-paciente` dentro de la
+/// clínica recibida desde `LoginPage` ([empresa]). La clínica no se puede
+/// cambiar aquí: viaja en el `empresa_codigo` del cuerpo y su nombre REAL (el
+/// que devolvió `GET /seguridad/tenant/empresas`) se muestra en la cabecera,
+/// para que el paciente sepa dónde se está registrando.
+///
+/// La clínica la elige el paciente en el selector del login (fuente única de
+/// verdad); esta pantalla nunca la deduce ni la vuelve a pedir.
 class RegisterPage extends StatefulWidget {
-  const RegisterPage({super.key});
+  const RegisterPage({super.key, required this.empresa, this.authService});
+
+  /// Clínica seleccionada en el login; la cuenta se crea únicamente en ella.
+  final EmpresaTenant empresa;
+
+  /// Servicio de autenticación inyectable (usado por las pruebas).
+  ///
+  /// Si no se provee, la pantalla crea su propio [AuthService].
+  final AuthService? authService;
 
   @override
   State<RegisterPage> createState() => _RegisterPageState();
@@ -17,7 +31,7 @@ class RegisterPage extends StatefulWidget {
 
 class _RegisterPageState extends State<RegisterPage>
     with TickerProviderStateMixin {
-  // Color de la identidad Visión Clara.
+  // Color de la identidad visual de la app (neutro, sin marca de clínica).
   static const Color _azulProfundo = Color(0xFF0D47A1);
 
   final _formKey = GlobalKey<FormState>();
@@ -41,7 +55,8 @@ class _RegisterPageState extends State<RegisterPage>
   DateTime? _fechaNacimiento;
   String? _sexo;
 
-  final AuthService _authService = AuthService();
+  // Servicio que se comunica con el backend FastAPI.
+  late final AuthService _authService = widget.authService ?? AuthService();
 
   // Controla la animación de entrada escalonada.
   late final AnimationController _entranceController = AnimationController(
@@ -78,13 +93,17 @@ class _RegisterPageState extends State<RegisterPage>
 
   late final Animation<double> _buttonScale = TweenSequence<double>([
     TweenSequenceItem(
-      tween: Tween<double>(begin: 1.0, end: 0.98)
-          .chain(CurveTween(curve: Curves.easeOut)),
+      tween: Tween<double>(
+        begin: 1.0,
+        end: 0.98,
+      ).chain(CurveTween(curve: Curves.easeOut)),
       weight: 50,
     ),
     TweenSequenceItem(
-      tween: Tween<double>(begin: 0.98, end: 1.0)
-          .chain(CurveTween(curve: Curves.easeOut)),
+      tween: Tween<double>(
+        begin: 0.98,
+        end: 1.0,
+      ).chain(CurveTween(curve: Curves.easeOut)),
       weight: 50,
     ),
   ]).animate(_buttonController);
@@ -201,6 +220,7 @@ class _RegisterPageState extends State<RegisterPage>
     });
 
     final request = RegistroPacienteRequest(
+      empresaCodigo: widget.empresa.codigo,
       ci: _ciController.text.trim(),
       nombres: _nombresController.text.trim(),
       apellidos: _apellidosController.text.trim(),
@@ -231,6 +251,15 @@ class _RegisterPageState extends State<RegisterPage>
       setState(() {
         _isLoading = false;
       });
+
+      // El backend no vincula cuentas a pacientes que ya existen en la
+      // clínica: se pide verificar la identidad presencialmente y no se
+      // ofrece ninguna alternativa automática.
+      if (error.message == AuthService.mensajePacienteExistente) {
+        await _mostrarPacienteExistente();
+        return;
+      }
+
       _mostrarError(error.message);
     } catch (_) {
       if (!mounted) return;
@@ -259,7 +288,8 @@ class _RegisterPageState extends State<RegisterPage>
           size: 48,
         ),
         title: const Text('Cuenta creada correctamente'),
-        content: const Text(
+        content: Text(
+          'Tu cuenta fue creada en ${widget.empresa.nombre}. '
           'Ya puedes iniciar sesión con tu correo y contraseña.',
           textAlign: TextAlign.center,
         ),
@@ -275,6 +305,35 @@ class _RegisterPageState extends State<RegisterPage>
               ),
             ),
             child: const Text('Ir a iniciar sesión'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Aviso para el 409 de paciente ya existente.
+  ///
+  /// No se ofrece vinculación automática ni se piden identificadores internos:
+  /// la única vía es verificar la identidad en la clínica.
+  Future<void> _mostrarPacienteExistente() {
+    return showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(
+          Icons.badge_outlined,
+          color: Color(0xFF1976D2),
+          size: 40,
+        ),
+        title: const Text('Verifica tu identidad en la clínica'),
+        content: const Text(
+          AuthService.mensajePacienteExistente,
+          textAlign: TextAlign.center,
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Entendido'),
           ),
         ],
       ),
@@ -390,9 +449,8 @@ class _RegisterPageState extends State<RegisterPage>
         hint: 'dd/mm/aaaa',
         suffixIcon: const Icon(Icons.calendar_today_outlined),
       ),
-      validator: (_) => _fechaNacimiento == null
-          ? 'Selecciona tu fecha de nacimiento'
-          : null,
+      validator: (_) =>
+          _fechaNacimiento == null ? 'Selecciona tu fecha de nacimiento' : null,
     );
   }
 
@@ -410,9 +468,7 @@ class _RegisterPageState extends State<RegisterPage>
         DropdownMenuItem(value: 'M', child: Text('Masculino')),
         DropdownMenuItem(value: 'F', child: Text('Femenino')),
       ],
-      onChanged: _isLoading
-          ? null
-          : (value) => setState(() => _sexo = value),
+      onChanged: _isLoading ? null : (value) => setState(() => _sexo = value),
       validator: (value) {
         if (value == null || value.isEmpty) {
           return 'Selecciona tu sexo';
@@ -462,128 +518,119 @@ class _RegisterPageState extends State<RegisterPage>
   Widget _espacio([double alto = 14]) => SizedBox(height: alto);
 
   Widget _seccionDatosPersonales() {
-    return _grupo(
-      'Datos personales',
-      [
-        _campoTexto(
-          controller: _ciController,
-          icon: Icons.badge_outlined,
-          label: 'Carnet de identidad',
-          hint: 'Ej. 12345678',
-          keyboardType: TextInputType.number,
-          formatters: [FilteringTextInputFormatter.digitsOnly],
-          validator: (v) => _validarObligatorio(v, 'CI'),
-        ),
-        _espacio(),
-        _campoTexto(
-          controller: _nombresController,
-          icon: Icons.person_outline,
-          label: 'Nombres',
-          hint: 'Escribe tus nombres',
-          validator: (v) => _validarObligatorio(v, 'nombres'),
-        ),
-        _espacio(),
-        _campoTexto(
-          controller: _apellidosController,
-          icon: Icons.person_outline,
-          label: 'Apellidos',
-          hint: 'Escribe tus apellidos',
-          validator: (v) => _validarObligatorio(v, 'apellidos'),
-        ),
-        _espacio(),
-        _campoFecha(),
-        _espacio(),
-        _campoSexo(),
-      ],
-    );
+    return _grupo('Datos personales', [
+      _campoTexto(
+        controller: _ciController,
+        icon: Icons.badge_outlined,
+        label: 'Carnet de identidad',
+        hint: 'Ej. 12345678',
+        keyboardType: TextInputType.number,
+        formatters: [FilteringTextInputFormatter.digitsOnly],
+        validator: (v) => _validarObligatorio(v, 'CI'),
+      ),
+      _espacio(),
+      _campoTexto(
+        controller: _nombresController,
+        icon: Icons.person_outline,
+        label: 'Nombres',
+        hint: 'Escribe tus nombres',
+        validator: (v) => _validarObligatorio(v, 'nombres'),
+      ),
+      _espacio(),
+      _campoTexto(
+        controller: _apellidosController,
+        icon: Icons.person_outline,
+        label: 'Apellidos',
+        hint: 'Escribe tus apellidos',
+        validator: (v) => _validarObligatorio(v, 'apellidos'),
+      ),
+      _espacio(),
+      _campoFecha(),
+      _espacio(),
+      _campoSexo(),
+    ]);
   }
 
   Widget _seccionContacto() {
-    return _grupo(
-      'Datos de contacto',
-      [
-        _campoTexto(
-          controller: _telefonoController,
-          icon: Icons.phone_outlined,
-          label: 'Teléfono',
-          hint: 'Ej. +59170000000',
-          keyboardType: TextInputType.phone,
-          validator: (v) => _validarObligatorio(v, 'teléfono'),
-        ),
-        _espacio(),
-        _campoTexto(
-          controller: _contactoEmergenciaController,
-          icon: Icons.emergency_outlined,
-          label: 'Contacto de emergencia',
-          hint: 'Ej. +59171111111 (opcional)',
-          keyboardType: TextInputType.phone,
-          validator: (_) => null,
-        ),
-        _espacio(),
-        _campoTexto(
-          controller: _direccionController,
-          icon: Icons.location_on_outlined,
-          label: 'Dirección',
-          hint: 'Ej. Av. Ejemplo 123 (opcional)',
-          validator: (_) => null,
-        ),
-      ],
-    );
+    return _grupo('Datos de contacto', [
+      _campoTexto(
+        controller: _telefonoController,
+        icon: Icons.phone_outlined,
+        label: 'Teléfono',
+        hint: 'Ej. +59170000000',
+        keyboardType: TextInputType.phone,
+        validator: (v) => _validarObligatorio(v, 'teléfono'),
+      ),
+      _espacio(),
+      _campoTexto(
+        controller: _contactoEmergenciaController,
+        icon: Icons.emergency_outlined,
+        label: 'Contacto de emergencia',
+        hint: 'Ej. +59171111111 (opcional)',
+        keyboardType: TextInputType.phone,
+        validator: (_) => null,
+      ),
+      _espacio(),
+      _campoTexto(
+        controller: _direccionController,
+        icon: Icons.location_on_outlined,
+        label: 'Dirección',
+        hint: 'Ej. Av. Ejemplo 123 (opcional)',
+        validator: (_) => null,
+      ),
+    ]);
   }
 
   Widget _seccionAcceso() {
-    return _grupo(
-      'Datos de acceso',
-      [
-        _campoTexto(
-          controller: _correoController,
-          icon: Icons.email_outlined,
-          label: 'Correo electrónico',
-          hint: 'ejemplo@correo.com',
-          keyboardType: TextInputType.emailAddress,
-          textInputAction: TextInputAction.next,
-          autocorrect: false,
-          validator: _validarCorreo,
-        ),
-        _espacio(),
-        _campoTexto(
-          controller: _passwordController,
-          icon: Icons.lock_outline,
-          label: 'Contraseña',
-          hint: 'Crea una contraseña segura',
-          obscureText: _obscurePassword,
-          textInputAction: TextInputAction.next,
-          suffixIcon: IconButton(
-            onPressed: _togglePassword,
-            icon: Icon(
-              _obscurePassword
-                  ? Icons.visibility_outlined
-                  : Icons.visibility_off_outlined,
-            ),
+    return _grupo('Datos de acceso', [
+      _campoTexto(
+        controller: _correoController,
+        icon: Icons.email_outlined,
+        label: 'Correo electrónico',
+        hint: 'ejemplo@correo.com',
+        keyboardType: TextInputType.emailAddress,
+        textInputAction: TextInputAction.next,
+        autocorrect: false,
+        validator: _validarCorreo,
+      ),
+      _espacio(),
+      _campoTexto(
+        controller: _passwordController,
+        icon: Icons.lock_outline,
+        label: 'Contraseña',
+        hint: 'Crea una contraseña segura',
+        obscureText: _obscurePassword,
+        textInputAction: TextInputAction.next,
+        suffixIcon: IconButton(
+          onPressed: _togglePassword,
+          icon: Icon(
+            _obscurePassword
+                ? Icons.visibility_outlined
+                : Icons.visibility_off_outlined,
           ),
-          helperText:
-              'Debe incluir mayúscula, minúscula, número y carácter especial.',
-          validator: _validarPassword,
         ),
-        _espacio(),
-        _campoTexto(
-          controller: _confirmPasswordController,
-          icon: Icons.lock_outline,
-          label: 'Confirmar contraseña',
-          obscureText: _obscureConfirmPassword,
-          textInputAction: TextInputAction.done,
-          suffixIcon: IconButton(
-            onPressed: _toggleConfirmPassword,
-            icon: Icon(
-              _obscureConfirmPassword
-                  ? Icons.visibility_outlined
-                  : Icons.visibility_off_outlined,
-            ),
+        helperText:
+            'Debe incluir mayúscula, minúscula, número y carácter especial.',
+        validator: _validarPassword,
+      ),
+      _espacio(),
+      _campoTexto(
+        controller: _confirmPasswordController,
+        icon: Icons.lock_outline,
+        label: 'Confirmar contraseña',
+        obscureText: _obscureConfirmPassword,
+        textInputAction: TextInputAction.done,
+        suffixIcon: IconButton(
+          onPressed: _toggleConfirmPassword,
+          icon: Icon(
+            _obscureConfirmPassword
+                ? Icons.visibility_outlined
+                : Icons.visibility_off_outlined,
           ),
-          validator: _validarConfirmPassword,
         ),
-      ],
-    );
+        validator: _validarConfirmPassword,
+      ),
+    ]);
   }
 
   /// Envuelve un bloque con fade + slide para la entrada escalonada.
@@ -603,8 +650,60 @@ class _RegisterPageState extends State<RegisterPage>
     );
   }
 
-  /// Cabecera: botón atrás, logo pequeño y textos de bienvenida.
+  /// Aviso de la clínica donde se creará la cuenta.
+  ///
+  /// Es solo informativo: el registro siempre se hace contra la clínica
+  /// elegida en el login y aquí no puede cambiarse.
+  Widget _buildClinicaBanner() {
+    final EmpresaTenant empresa = widget.empresa;
+
+    return Container(
+      key: const Key('register-clinica'),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE3F2FD),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF90CAF9)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.local_hospital_outlined, color: Color(0xFF1565C0)),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Te estás registrando en',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  empresa.nombre,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF0D47A1),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Código de clínica: ${empresa.codigo}',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                ),
+              ],
+            ),
+          ),
+          const Icon(Icons.lock_outline, size: 18, color: Color(0xFF1565C0)),
+        ],
+      ),
+    );
+  }
+
+  /// Cabecera: botón atrás, identidad visual neutra y textos de bienvenida.
   Widget _buildHeader() {
+    final EmpresaTenant empresa = widget.empresa;
+
     return FadeTransition(
       opacity: _headerEntrance,
       child: Column(
@@ -630,37 +729,57 @@ class _RegisterPageState extends State<RegisterPage>
             ),
           ),
           const SizedBox(height: 8),
-          Image.asset(
-            'assets/images/logo_vision_clara.png',
+          // Identidad neutra: el backend todavía no entrega un logotipo por
+          // clínica, así que no se usa el de una clínica concreta.
+          Container(
+            key: const Key('register-identidad-icono'),
+            width: 72,
             height: 72,
-            fit: BoxFit.contain,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFFD6ECFA), Color(0xFFB7E3F9)],
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF1976D2).withValues(alpha: 0.16),
+                  blurRadius: 16,
+                  offset: const Offset(0, 6),
+                ),
+              ],
+            ),
+            child: const Icon(
+              Icons.local_hospital_outlined,
+              size: 34,
+              color: Color(0xFF0D47A1),
+            ),
           ),
           const SizedBox(height: 12),
           Text(
             'Crear cuenta',
             textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: _azulProfundo,
-                ),
+            style: Theme.of(context).textTheme.headlineSmall
+                ?.copyWith(fontWeight: FontWeight.bold, color: _azulProfundo),
           ),
           const SizedBox(height: 6),
           Text(
-            'Regístrate para acceder a los servicios de Visión Clara',
+            'Regístrate para acceder a los servicios de ${empresa.nombre}',
+            key: const Key('register-clinica-identidad'),
             textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: const Color(0xFF5C6F80),
-                  height: 1.35,
-                ),
+            style: Theme.of(context).textTheme.bodyMedium
+                ?.copyWith(color: const Color(0xFF5C6F80), height: 1.35),
           ),
           const SizedBox(height: 4),
           Text(
             'Completa tus datos para continuar',
             textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: const Color(0xFF7893A9),
-                ),
+            style: Theme.of(context).textTheme.bodySmall
+                ?.copyWith(color: const Color(0xFF7893A9)),
           ),
+          const SizedBox(height: 16),
+          _buildClinicaBanner(),
         ],
       ),
     );
@@ -689,6 +808,7 @@ class _RegisterPageState extends State<RegisterPage>
         child: Material(
           color: Colors.transparent,
           child: InkWell(
+            key: const Key('register-submit'),
             onTap: _isLoading ? null : _crearCuenta,
             borderRadius: BorderRadius.circular(16),
             child: Padding(
@@ -765,11 +885,9 @@ class _RegisterPageState extends State<RegisterPage>
                         const SizedBox(height: 12),
                         Text(
                           'Al crear tu cuenta podrás acceder '
-                          'a los servicios de Visión Clara.',
+                          'a los servicios de ${widget.empresa.nombre}.',
                           textAlign: TextAlign.center,
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
+                          style: Theme.of(context).textTheme.bodySmall
                               ?.copyWith(color: const Color(0xFF7893A9)),
                         ),
                         const SizedBox(height: 8),
@@ -873,5 +991,3 @@ class _FormaRegistro extends StatelessWidget {
     );
   }
 }
-
-

@@ -1,19 +1,30 @@
 import 'package:flutter/material.dart';
 
-/// Pantalla temporal que se muestra después del inicio de sesión del paciente.
+import '../../../core/session/sesion_clinica.dart';
+
+/// Pantalla de bienvenida que se muestra después del inicio de sesión.
 ///
-/// Muestra la identidad de Visión Clara y una tarjeta indicando que el sistema
-/// móvil está en construcción. No contiene módulos funcionales todavía.
+/// Muestra la identidad de la clínica autenticada ([ClinicaSesion], datos
+/// reales de `GET /seguridad/tenant/empresas`) y una tarjeta indicando que el
+/// sistema móvil está en construcción.
+///
+/// El backend todavía no entrega un logotipo por clínica, así que NO se usa el
+/// logotipo de una clínica concreta: se muestra un icono neutro.
 class InicioPage extends StatefulWidget {
-  const InicioPage({super.key});
+  const InicioPage({super.key, this.clinica});
+
+  /// Clínica de la sesión activa.
+  ///
+  /// Es `null` mientras se lee la sesión guardada o cuando la app no pudo
+  /// identificar la clínica; en ese caso se muestra una bienvenida genérica.
+  final ClinicaSesion? clinica;
 
   @override
   State<InicioPage> createState() => _InicioPageState();
 }
 
-class _InicioPageState extends State<InicioPage>
-    with TickerProviderStateMixin {
-  // Colores de la identidad Visión Clara.
+class _InicioPageState extends State<InicioPage> with TickerProviderStateMixin {
+  // Colores de la identidad visual de la app (neutros, sin marca de clínica).
   static const Color _azulProfundo = Color(0xFF0D47A1);
   static const Color _azulPrincipal = Color(0xFF1976D2);
 
@@ -36,8 +47,10 @@ class _InicioPageState extends State<InicioPage>
     curve: const Interval(0.55, 1.0, curve: Curves.easeOutCubic),
   );
 
-  late final Animation<double> _logoScale =
-      Tween<double>(begin: 0.95, end: 1.0).animate(_logoEntrance);
+  late final Animation<double> _logoScale = Tween<double>(
+    begin: 0.95,
+    end: 1.0,
+  ).animate(_logoEntrance);
 
   @override
   void initState() {
@@ -53,6 +66,8 @@ class _InicioPageState extends State<InicioPage>
 
   @override
   Widget build(BuildContext context) {
+    final ClinicaSesion? clinica = widget.clinica;
+
     return Scaffold(
       body: Stack(
         children: [
@@ -61,10 +76,7 @@ class _InicioPageState extends State<InicioPage>
 
           SafeArea(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 20,
-                vertical: 32,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 32),
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 420),
                 child: Column(
@@ -72,16 +84,39 @@ class _InicioPageState extends State<InicioPage>
                   children: [
                     const SizedBox(height: 12),
 
-                    // Logo con fade + escala.
+                    // Identidad visual de la clínica (fade + escala).
+                    //
+                    // No se usa un logotipo fijo: el backend todavía no expone
+                    // una imagen por clínica. Se muestra un icono neutro.
                     FadeTransition(
                       opacity: _logoEntrance,
                       child: ScaleTransition(
                         scale: _logoScale,
                         child: Center(
-                          child: Image.asset(
-                            'assets/images/logo_vision_clara.png',
+                          child: Container(
+                            key: const Key('inicio-identidad-clinica'),
+                            width: 96,
                             height: 96,
-                            fit: BoxFit.contain,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              gradient: const LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [Color(0xFFD6ECFA), Color(0xFFB7E3F9)],
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: _azulPrincipal.withValues(alpha: 0.16),
+                                  blurRadius: 18,
+                                  offset: const Offset(0, 6),
+                                ),
+                              ],
+                            ),
+                            child: Icon(
+                              Icons.local_hospital_outlined,
+                              size: 46,
+                              color: _azulProfundo.withValues(alpha: 0.9),
+                            ),
                           ),
                         ),
                       ),
@@ -95,11 +130,12 @@ class _InicioPageState extends State<InicioPage>
                       child: Column(
                         children: [
                           Text(
-                            'Bienvenido a Visión Clara',
+                            clinica == null
+                                ? 'Bienvenido'
+                                : 'Bienvenido a ${clinica.etiqueta}',
+                            key: const Key('inicio-bienvenida'),
                             textAlign: TextAlign.center,
-                            style: Theme.of(context)
-                                .textTheme
-                                .headlineSmall
+                            style: Theme.of(context).textTheme.headlineSmall
                                 ?.copyWith(
                                   fontWeight: FontWeight.bold,
                                   color: _azulProfundo,
@@ -107,14 +143,10 @@ class _InicioPageState extends State<InicioPage>
                           ),
                           const SizedBox(height: 6),
                           Text(
-                            'Centro Oftalmológico',
+                            'Portal del paciente',
                             textAlign: TextAlign.center,
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleMedium
-                                ?.copyWith(
-                                  color: const Color(0xFF547799),
-                                ),
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(color: const Color(0xFF547799)),
                           ),
                         ],
                       ),
@@ -139,11 +171,10 @@ class _InicioPageState extends State<InicioPage>
 
                     const SizedBox(height: 14),
                     Text(
-                      'Gracias por utilizar Visión Clara.',
+                      'Gracias por utilizar nuestros servicios.',
                       textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: const Color(0xFF7893A9),
-                          ),
+                      style: Theme.of(context).textTheme.bodySmall
+                          ?.copyWith(color: const Color(0xFF7893A9)),
                     ),
                   ],
                 ),
@@ -209,10 +240,10 @@ class _TarjetaBienvenida extends StatelessWidget {
               'Sistema móvil\nen construcción',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: azulProfundo,
-                    height: 1.25,
-                  ),
+                fontWeight: FontWeight.bold,
+                color: azulProfundo,
+                height: 1.25,
+              ),
             ),
 
             const SizedBox(height: 14),
@@ -221,10 +252,8 @@ class _TarjetaBienvenida extends StatelessWidget {
               'Estamos preparando nuevas funcionalidades '
               'para brindarte una mejor experiencia.',
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: const Color(0xFF5C6F80),
-                    height: 1.45,
-                  ),
+              style: Theme.of(context).textTheme.bodyMedium
+                  ?.copyWith(color: const Color(0xFF5C6F80), height: 1.45),
             ),
           ],
         ),
@@ -320,4 +349,3 @@ class _FormaCircular extends StatelessWidget {
     );
   }
 }
-

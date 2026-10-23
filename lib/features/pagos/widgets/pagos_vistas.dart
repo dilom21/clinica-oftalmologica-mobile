@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// Fondo con degradado de la identidad Visión Clara para las pantallas Pagos.
+/// Fondo con degradado neutro (sin marca de una clínica) para Pagos.
 class FondoPagos extends StatelessWidget {
   const FondoPagos({super.key});
 

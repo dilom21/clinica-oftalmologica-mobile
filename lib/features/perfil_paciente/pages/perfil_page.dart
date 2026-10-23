@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/session/sesion_clinica.dart';
 import '../../../core/storage/token_storage.dart';
 import '../models/mi_perfil_paciente.dart';
 import '../services/paciente_service.dart';
@@ -7,25 +8,42 @@ import '../../authentication_security/pages/login/login_page.dart';
 
 /// Perfil del paciente autenticado (SOLO LECTURA).
 ///
-/// Consulta `GET /pacientes/me` con el JWT y muestra los datos reales.
-/// También implementa CU02: Cerrar sesión (elimina el JWT local y vuelve
-/// a LoginPage limpiando la pila de navegación).
+/// Consulta `GET /pacientes/me` con el JWT y muestra los datos reales junto a
+/// la clínica de la sesión ([ClinicaSesion], datos reales del backend).
+/// También implementa CU02: Cerrar sesión (elimina el JWT local, olvida la
+/// identidad de la clínica y vuelve a LoginPage limpiando la pila de
+/// navegación).
 class PerfilPage extends StatefulWidget {
-  const PerfilPage({super.key});
+  const PerfilPage({
+    super.key,
+    this.clinica,
+    this.pacienteService,
+    this.alCerrarSesion,
+  });
+
+  /// Clínica de la sesión activa (`null` si aún no se pudo identificar).
+  final ClinicaSesion? clinica;
+
+  /// Servicio del paciente; inyectable en pruebas.
+  final PacienteService? pacienteService;
+
+  /// Se invoca al cerrar sesión (o al detectar un 401) para olvidar la
+  /// identidad de la clínica antes de volver al login.
+  final VoidCallback? alCerrarSesion;
 
   @override
   State<PerfilPage> createState() => _PerfilPageState();
 }
 
-class _PerfilPageState extends State<PerfilPage>
-    with TickerProviderStateMixin {
-  // Colores de la identidad Visión Clara.
+class _PerfilPageState extends State<PerfilPage> with TickerProviderStateMixin {
+  // Colores de la identidad visual de la app (neutros, sin marca de clínica).
   static const Color _azulProfundo = Color(0xFF0D47A1);
   static const Color _azulPrincipal = Color(0xFF1976D2);
   static const Color _verdeActivo = Color(0xFF2E7D32);
   static const Color _rojoSalida = Color(0xFFD32F2F);
 
-  final PacienteService _pacienteService = PacienteService();
+  late final PacienteService _pacienteService =
+      widget.pacienteService ?? PacienteService();
 
   MiPerfilPaciente? _perfil;
   String? _error;
@@ -62,8 +80,10 @@ class _PerfilPageState extends State<PerfilPage>
     curve: const Interval(0.8, 1.0, curve: Curves.easeOutCubic),
   );
 
-  late final Animation<double> _avatarScale =
-      Tween<double>(begin: 0.95, end: 1.0).animate(_avatarEntrance);
+  late final Animation<double> _avatarScale = Tween<double>(
+    begin: 0.95,
+    end: 1.0,
+  ).animate(_avatarEntrance);
 
   @override
   void initState() {
@@ -120,6 +140,11 @@ class _PerfilPageState extends State<PerfilPage>
   Future<void> _borrarSesionYSalir() async {
     final storage = TokenStorage();
     await storage.deleteToken();
+
+    // La identidad de la clínica anterior deja de existir en memoria: al volver
+    // al login no debe quedar ningún nombre ni logotipo de esa clínica.
+    widget.alCerrarSesion?.call();
+
     if (!mounted) return;
 
     Navigator.of(context).pushAndRemoveUntil(
@@ -255,9 +280,8 @@ class _PerfilPageState extends State<PerfilPage>
           const SizedBox(height: 16),
           Text(
             'Cargando tu perfil…',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: const Color(0xFF5C6F80),
-                ),
+            style: Theme.of(context).textTheme.bodyMedium
+                ?.copyWith(color: const Color(0xFF5C6F80)),
           ),
         ],
       ),
@@ -296,17 +320,16 @@ class _PerfilPageState extends State<PerfilPage>
                   'No se pudo cargar tu perfil',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        color: const Color(0xFF0D47A1),
-                      ),
+                    fontWeight: FontWeight.bold,
+                    color: const Color(0xFF0D47A1),
+                  ),
                 ),
                 const SizedBox(height: 8),
                 Text(
                   _error ?? 'Inténtalo de nuevo.',
                   textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: const Color(0xFF5C6F80),
-                      ),
+                  style: Theme.of(context).textTheme.bodyMedium
+                      ?.copyWith(color: const Color(0xFF5C6F80)),
                 ),
                 const SizedBox(height: 20),
                 SizedBox(
@@ -350,9 +373,9 @@ class _PerfilPageState extends State<PerfilPage>
                   'Perfil',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        color: _azulProfundo,
-                      ),
+                    fontWeight: FontWeight.bold,
+                    color: _azulProfundo,
+                  ),
                 ),
               ),
 
@@ -401,9 +424,9 @@ class _PerfilPageState extends State<PerfilPage>
                   perfil.nombreCompleto,
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        color: const Color(0xFF1B2B3A),
-                      ),
+                    fontWeight: FontWeight.bold,
+                    color: const Color(0xFF1B2B3A),
+                  ),
                 ),
               ),
 
@@ -415,9 +438,8 @@ class _PerfilPageState extends State<PerfilPage>
                 child: Text(
                   perfil.correo,
                   textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: const Color(0xFF5C6F80),
-                      ),
+                  style: Theme.of(context).textTheme.bodyMedium
+                      ?.copyWith(color: const Color(0xFF5C6F80)),
                 ),
               ),
 
@@ -482,9 +504,16 @@ class _PerfilPageState extends State<PerfilPage>
 
   /// Tarjeta "Información de tu cuenta".
   Widget _tarjetaCuenta(MiPerfilPaciente perfil) {
+    final ClinicaSesion? clinica = widget.clinica;
+
     return _TarjetaSeccion(
       titulo: 'Información de tu cuenta',
       hijos: [
+        // Clínica real de la sesión (nombre devuelto por el backend).
+        if (clinica != null) ...[
+          _FilaInfo(label: 'Clínica', value: clinica.etiqueta),
+          const _SeparadorPerfil(),
+        ],
         _FilaInfo(label: 'CI', value: _textoCampo(perfil.ci)),
         const _SeparadorPerfil(),
         _FilaInfo(
@@ -545,18 +574,14 @@ class _PerfilPageState extends State<PerfilPage>
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(
-                  Icons.logout,
-                  size: 20,
-                  color: Color(0xFFD32F2F),
-                ),
+                const Icon(Icons.logout, size: 20, color: Color(0xFFD32F2F)),
                 const SizedBox(width: 10),
                 Text(
                   'Cerrar sesión',
                   style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        color: _rojoSalida,
-                        fontWeight: FontWeight.w600,
-                      ),
+                    color: _rojoSalida,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ],
             ),
@@ -678,9 +703,9 @@ class _TarjetaSeccion extends StatelessWidget {
             Text(
               titulo,
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: const Color(0xFF0D47A1),
-                  ),
+                fontWeight: FontWeight.bold,
+                color: const Color(0xFF0D47A1),
+              ),
             ),
             const SizedBox(height: 12),
             ...hijos,
@@ -703,11 +728,7 @@ class _SeparadorPerfil extends StatelessWidget {
 
 /// Fila etiqueta/valor de una tarjeta de perfil.
 class _FilaInfo extends StatelessWidget {
-  const _FilaInfo({
-    required this.label,
-    required this.value,
-    this.colorValor,
-  });
+  const _FilaInfo({required this.label, required this.value, this.colorValor});
 
   final String label;
   final String value;
@@ -724,9 +745,8 @@ class _FilaInfo extends StatelessWidget {
             flex: 5,
             child: Text(
               label,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: const Color(0xFF5C6F80),
-                  ),
+              style: Theme.of(context).textTheme.bodyMedium
+                  ?.copyWith(color: const Color(0xFF5C6F80)),
             ),
           ),
           const SizedBox(width: 12),
@@ -736,9 +756,9 @@ class _FilaInfo extends StatelessWidget {
               value,
               textAlign: TextAlign.right,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: colorValor ?? const Color(0xFF1B2B3A),
-                    fontWeight: colorValor != null ? FontWeight.w600 : null,
-                  ),
+                color: colorValor ?? const Color(0xFF1B2B3A),
+                fontWeight: colorValor != null ? FontWeight.w600 : null,
+              ),
             ),
           ),
         ],

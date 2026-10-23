@@ -504,8 +504,11 @@ class PagoHistorial {
   /// Fecha a mostrar: la del pago confirmado o, si aún no existe, la creación.
   DateTime? get fechaMostrar => fechaHoraPago ?? fechaCreacion;
 
-  /// Etiqueta legible del método de pago (sin inventar datos: si el backend
-  /// envía un valor desconocido se muestra tal cual).
+  /// Etiqueta legible del método de pago.
+  ///
+  /// Los valores posibles provienen del CHECK real de la tabla `pago`
+  /// (`EFECTIVO`, `TARJETA`, `TRANSFERENCIA`, `QR`, `OTRO`). No se inventan
+  /// datos: si el backend envía un valor desconocido se muestra tal cual.
   String get metodoPagoEtiqueta {
     switch (metodoPago.trim().toUpperCase()) {
       case 'TARJETA':
@@ -514,12 +517,33 @@ class PagoHistorial {
         return 'Efectivo';
       case 'TRANSFERENCIA':
         return 'Transferencia';
+      case 'QR':
+        return 'QR';
+      case 'OTRO':
+        return 'Otro';
       case '':
         return 'No especificado';
       default:
         return metodoPago;
     }
   }
+
+  /// Pasarela legible (`pasarela`) o `null` si el backend no la informa.
+  ///
+  /// Es el ÚNICO dato fiable del contrato para distinguir un pago con tarjeta
+  /// procesado por Stripe (`pasarela = "STRIPE"`) de un pago presencial (cuya
+  /// `pasarela` es `null`). No existe un campo `origen` en el backend.
+  String? get pasarelaEtiqueta {
+    final String? valor = pasarela?.trim();
+    if (valor == null || valor.isEmpty) return null;
+
+    return valor.toUpperCase() == 'STRIPE' ? 'Stripe' : valor;
+  }
+
+  /// Indica si el pago fue procesado por la pasarela Stripe.
+  ///
+  /// Se basa solo en el campo `pasarela` que devuelve FastAPI.
+  bool get esStripe => (pasarela ?? '').trim().toUpperCase() == 'STRIPE';
 
   /// Crea el modelo desde el JSON devuelto por el backend.
   factory PagoHistorial.fromJson(Map<String, dynamic> json) {

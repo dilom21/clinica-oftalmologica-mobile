@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'package:clinica_oftalmologica_mobile/features/pagos/models/pago_models.dart';
 import 'package:clinica_oftalmologica_mobile/features/pagos/services/pagos_service.dart';
 
 const _jsonHeaders = {'content-type': 'application/json'};
@@ -372,5 +373,75 @@ void main() {
         ),
       );
     });
+  });
+
+  group('sesiones tenant independientes', () {
+    test(
+      'cada JWT consulta su propio historial sin enviar ids ni bases',
+      () async {
+        final encabezados = <String?>[];
+        final peticiones = <String>[];
+        const historiales = <String, List<Map<String, dynamic>>>{
+          'jwt-clinica-a': [
+            {
+              'pago_id': 1,
+              'consulta_clinica_id': 4,
+              'fecha_creacion': '2026-10-01T10:00:00',
+              'monto': '60.00',
+              'moneda': 'BOB',
+              'metodo_pago': 'EFECTIVO',
+              'estado_pago': 'APROBADO',
+              'pasarela': null,
+              'servicios': <Object>[],
+            },
+          ],
+          'jwt-clinica-b': [
+            {
+              'pago_id': 2,
+              'consulta_clinica_id': 9,
+              'fecha_creacion': '2026-10-02T10:00:00',
+              'monto': '90.00',
+              'moneda': 'BOB',
+              'metodo_pago': 'QR',
+              'estado_pago': 'PENDIENTE',
+              'pasarela': null,
+              'servicios': <Object>[],
+            },
+          ],
+        };
+
+        final client = MockClient((request) async {
+          final String? auth = request.headers['Authorization'];
+          encabezados.add(auth);
+          peticiones.add('${request.method} ${request.url}');
+          final String token = (auth ?? '').replaceFirst('Bearer ', '');
+          return _json(historiales[token] ?? const <Object>[], 200);
+        });
+
+        String? tokenActual = 'jwt-clinica-a';
+        final service = PagosService(
+          client: client,
+          leerToken: () async => tokenActual,
+        );
+
+        final historialA = await service.listarMisPagos();
+        tokenActual = 'jwt-clinica-b';
+        final historialB = await service.listarMisPagos();
+
+        expect(historialA.single.pagoId, 1);
+        expect(historialB.single.pagoId, 2);
+        expect(historialB.single.estadoPago, EstadoPagoApi.pendiente);
+        expect(encabezados, ['Bearer jwt-clinica-a', 'Bearer jwt-clinica-b']);
+        // La ruta no lleva paciente_id, empresa ni nombre de base de datos.
+        for (final peticion in peticiones) {
+          expect(peticion, startsWith('GET '));
+          expect(peticion, contains('/pagos/mis-pagos'));
+          expect(peticion.toLowerCase(), isNot(contains('paciente')));
+          expect(peticion.toLowerCase(), isNot(contains('empresa')));
+          expect(peticion.toLowerCase(), isNot(contains('database')));
+          expect(peticion, isNot(contains('?')));
+        }
+      },
+    );
   });
 }

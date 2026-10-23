@@ -69,7 +69,7 @@ class PagoDetallePage extends StatelessWidget {
                 if (pago.aprobado)
                   _BotonComprobante(onTap: () => _abrirComprobante(context))
                 else
-                  const _AvisoSinComprobante(),
+                  _AvisoSinComprobante(estado: pago.estadoPago),
               ],
             ),
           ),
@@ -177,7 +177,7 @@ class _ResumenPago extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final String? pasarela = pago.pasarela;
+    final String? pasarela = pago.pasarelaEtiqueta;
 
     return _Tarjeta(
       titulo: 'Pago #${pago.pagoId}',
@@ -195,8 +195,7 @@ class _ResumenPago extends StatelessWidget {
         ),
         _Dato(etiqueta: 'Moneda', valor: pago.moneda),
         _Dato(etiqueta: 'Método de pago', valor: pago.metodoPagoEtiqueta),
-        if (pasarela != null && pasarela.trim().isNotEmpty)
-          _Dato(etiqueta: 'Pasarela', valor: pasarela),
+        if (pasarela != null) _Dato(etiqueta: 'Pasarela', valor: pasarela),
         if (pago.tieneConsulta)
           _Dato(etiqueta: 'Consulta', valor: '#${pago.consultaClinicaId}'),
       ],
@@ -213,7 +212,10 @@ class _ServiciosPago extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _Tarjeta(
-      titulo: 'Servicios pagados',
+      // Solo un pago APROBADO tiene servicios realmente pagados; en cualquier
+      // otro estado se listan como "del pago" para no dar por confirmado algo
+      // que el backend aún no aprobó (QR/transferencia pendientes, etc.).
+      titulo: pago.aprobado ? 'Servicios pagados' : 'Servicios del pago',
       icono: Icons.medical_services_outlined,
       children: [
         if (pago.servicios.isEmpty)
@@ -300,9 +302,35 @@ class _BotonComprobante extends StatelessWidget {
   }
 }
 
-/// Aviso cuando el pago todavía no está APROBADO (sin comprobante).
+/// Aviso cuando el pago no está APROBADO (sin comprobante).
+///
+/// El texto depende del estado real que devolvió el backend: un pago
+/// PENDIENTE (efectivo, QR o transferencia en validación) nunca se presenta
+/// como confirmado.
 class _AvisoSinComprobante extends StatelessWidget {
-  const _AvisoSinComprobante();
+  const _AvisoSinComprobante({required this.estado});
+
+  /// Estado del pago según el backend.
+  final EstadoPagoApi estado;
+
+  /// Mensaje acorde al estado del pago.
+  String get _mensaje {
+    switch (estado) {
+      case EstadoPagoApi.rechazado:
+        return 'El pago fue rechazado, por lo que no cuenta con comprobante. '
+            'Comunícate con la clínica si necesitas ayuda.';
+      case EstadoPagoApi.anulado:
+        return 'El pago fue anulado, por lo que no cuenta con comprobante.';
+      case EstadoPagoApi.reembolsado:
+        return 'El pago fue reembolsado y no permite descargar el comprobante '
+            'desde la app.';
+      case EstadoPagoApi.pendiente:
+      case EstadoPagoApi.aprobado:
+      case EstadoPagoApi.desconocido:
+        return 'El comprobante estará disponible cuando el pago figure como '
+            'APROBADO en el servidor.';
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -315,14 +343,13 @@ class _AvisoSinComprobante extends StatelessWidget {
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
-        children: const [
-          Icon(Icons.info_outline, color: Color(0xFFB26A00)),
-          SizedBox(width: 12),
+        children: [
+          const Icon(Icons.info_outline, color: Color(0xFFB26A00)),
+          const SizedBox(width: 12),
           Expanded(
             child: Text(
-              'El comprobante estará disponible cuando el pago figure como '
-              'APROBADO en el servidor.',
-              style: TextStyle(
+              _mensaje,
+              style: const TextStyle(
                 color: Color(0xFF8A4B00),
                 fontSize: 12.5,
                 height: 1.45,

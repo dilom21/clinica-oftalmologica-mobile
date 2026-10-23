@@ -23,7 +23,10 @@ import 'servicios_pago_page.dart';
 ///   permite ver el detalle y el comprobante PDF de los pagos APROBADOS.
 ///
 /// El historial se consulta SOLO al abrir su sección (operación de lectura), de
-/// forma que abrir la pantalla nunca crea intenciones de pago.
+/// forma que abrir la pantalla nunca crea intenciones de pago. El contenedor de
+/// pestañas puede pedir una actualización mediante
+/// [PagosPageState.alMostrarPestana] cuando el paciente vuelve a la pestaña
+/// Pagos.
 class PagosPage extends StatefulWidget {
   const PagosPage({
     super.key,
@@ -31,6 +34,7 @@ class PagosPage extends StatefulWidget {
     this.stripeService,
     this.archivoService = const ComprobanteArchivoService(),
     this.visor = visorComprobantePdf,
+    this.alCerrarSesion,
   });
 
   /// Servicio HTTP de pagos; inyectable en pruebas.
@@ -45,11 +49,22 @@ class PagosPage extends StatefulWidget {
   /// Constructor del visor PDF del comprobante; inyectable en pruebas.
   final VisorComprobante visor;
 
+  /// Acción de cierre de sesión ante un JWT inválido o expirado.
+  ///
+  /// Por defecto borra la sesión segura ([TokenStorage.deleteToken]) y vuelve
+  /// al Login. Es inyectable para no depender del plugin nativo en pruebas.
+  final Future<void> Function()? alCerrarSesion;
+
   @override
-  State<PagosPage> createState() => _PagosPageState();
+  State<PagosPage> createState() => PagosPageState();
 }
 
-class _PagosPageState extends State<PagosPage> {
+/// Estado de [PagosPage].
+///
+/// Es público para que el contenedor de pestañas principal pueda pedirle que
+/// actualice sus datos cuando el usuario vuelve a la pestaña Pagos:
+/// `IndexedStack` conserva el estado y no vuelve a ejecutar `initState`.
+class PagosPageState extends State<PagosPage> {
   static const Color _azulProfundo = Color(0xFF0D47A1);
   static const Color _azulPrincipal = Color(0xFF1976D2);
 
@@ -71,18 +86,66 @@ class _PagosPageState extends State<PagosPage> {
   /// `true` mientras el historial no se haya consultado en esta sesión.
   bool _historialPendiente = true;
 
+  /// Petición de consultas en curso (evita solicitudes simultáneas).
+  bool _consultasEnCurso = false;
+
+  /// Petición del historial en curso (evita solicitudes simultáneas).
+  bool _historialEnCurso = false;
+
+  /// Momento de la última carga correcta de cada vista.
+  ///
+  /// Se usan para no repetir la misma consulta al cambiar de pestaña o de
+  /// sección en pocos segundos (sin polling y sin peticiones por reconstrucción).
+  DateTime? _consultasActualizadasEn;
+  DateTime? _historialActualizadoEn;
+
+  /// Ventana de frescura de los datos: dentro de este intervalo no se repite
+  /// la consulta al volver a la pestaña o al reabrir la sección.
+  static const Duration _vigenciaDatos = Duration(seconds: 15);
+
   @override
   void initState() {
     super.initState();
     _cargar();
   }
 
+  /// Indica si una carga es lo bastante antigua (o inexistente) para repetirla.
+  bool _datosVencidos(DateTime? ultimaCarga) {
+    if (ultimaCarga == null) return true;
+    return DateTime.now().difference(ultimaCarga) >= _vigenciaDatos;
+  }
+
+  /// Pide actualizar la sección visible cuando el usuario vuelve a la pestaña
+  /// Pagos (lo invoca el contenedor de pestañas).
+  ///
+  /// Es una operación de SOLO LECTURA: refrescar el historial nunca crea una
+  /// intención de pago ni modifica estados. Si ya hay una petición idéntica en
+  /// curso se reutiliza (no se duplican solicitudes).
+  Future<void> alMostrarPestana() async {
+    // Recepción pudo registrar un pago mientras el paciente estaba en otra
+    // pestaña: el historial se vuelve a consultar al abrirlo.
+    _historialPendiente = true;
+
+    if (_seccion == 0) {
+      if (!_datosVencidos(_consultasActualizadasEn)) return;
+      await _cargar(silencioso: _consultas.isNotEmpty);
+      return;
+    }
+
+    await _cargarHistorial(silencioso: _pagos.isNotEmpty);
+  }
+
   /// Carga las consultas del paciente (una vez por apertura de la página).
-  Future<void> _cargar() async {
-    setState(() {
-      _cargando = true;
-      _error = null;
-    });
+  Future<void> _cargar({bool silencioso = false}) async {
+    if (_consultasEnCurso) return;
+    _consultasEnCurso = true;
+
+    if (!silencioso) {
+      setState(() {
+        _cargando = true;
+        _error = null;
+      });
+    }
 
     try {
       final consultas = await _pagosService.listarMisConsultas();
@@ -91,6 +154,8 @@ class _PagosPageState extends State<PagosPage> {
       setState(() {
         _consultas = consultas;
         _cargando = false;
+        _error = null;
+        _consultasActualizadasEn = DateTime.now();
       });
     } on PagosException catch (error) {
       if (!mounted) return;
@@ -102,14 +167,42 @@ class _PagosPageState extends State<PagosPage> {
       }
 
       setState(() {
-        _error = error.message;
         _cargando = false;
+        if (!silencioso || _consultas.isEmpty) {
+          _error = error.message;
+        }
       });
+      if (silencioso && _error == null) {
+        _avisarActualizacionFallida(
+          'No se pudieron actualizar tus pagos. '
+          'Desliza hacia abajo para reintentar.',
+        );
+      }
+    } finally {
+      _consultasEnCurso = false;
     }
   }
 
+  /// Avisa con un SnackBar que una actualización silenciosa falló.
+  ///
+  /// Se usa solo cuando ya había datos en pantalla: así no se reemplaza la
+  /// lista por una pantalla de error y el paciente puede reintentar.
+  void _avisarActualizacionFallida(String mensaje) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(mensaje)));
+  }
+
   Future<void> _cerrarSesion() async {
-    await TokenStorage().deleteToken();
+    final Future<void> Function()? cerrar = widget.alCerrarSesion;
+
+    if (cerrar != null) {
+      await cerrar();
+    } else {
+      await TokenStorage().deleteToken();
+    }
+
     if (!mounted) return;
 
     Navigator.of(context).pushAndRemoveUntil(
@@ -138,7 +231,7 @@ class _PagosPageState extends State<PagosPage> {
     setState(() {
       _historialPendiente = true;
     });
-    await _cargar();
+    await _cargar(silencioso: _consultas.isNotEmpty);
   }
 
   /// Carga el historial de pagos del paciente (operación de SOLO LECTURA).
@@ -146,11 +239,16 @@ class _PagosPageState extends State<PagosPage> {
   /// Se consulta al abrir la sección Historial y al volver del detalle de un
   /// pago; NUNCA al abrir la pantalla ni al pagar, por lo que no genera
   /// intenciones de pago.
-  Future<void> _cargarHistorial() async {
-    setState(() {
-      _cargandoHistorial = true;
-      _errorHistorial = null;
-    });
+  Future<void> _cargarHistorial({bool silencioso = false}) async {
+    if (_historialEnCurso) return;
+    _historialEnCurso = true;
+
+    if (!silencioso) {
+      setState(() {
+        _cargandoHistorial = true;
+        _errorHistorial = null;
+      });
+    }
 
     try {
       final pagos = await _pagosService.listarMisPagos();
@@ -159,7 +257,9 @@ class _PagosPageState extends State<PagosPage> {
       setState(() {
         _pagos = pagos;
         _cargandoHistorial = false;
+        _errorHistorial = null;
         _historialPendiente = false;
+        _historialActualizadoEn = DateTime.now();
       });
     } on PagosException catch (error) {
       if (!mounted) return;
@@ -171,20 +271,36 @@ class _PagosPageState extends State<PagosPage> {
       }
 
       setState(() {
-        _errorHistorial = error.message;
         _cargandoHistorial = false;
+        if (!silencioso || _pagos.isEmpty) {
+          _errorHistorial = error.message;
+        }
       });
+      if (silencioso && _errorHistorial == null) {
+        _avisarActualizacionFallida(
+          'No se pudo actualizar tu historial. '
+          'Desliza hacia abajo para reintentar.',
+        );
+      }
+    } finally {
+      _historialEnCurso = false;
     }
   }
 
   /// Cambia de sección cargando el historial solo cuando hace falta.
   void _cambiarSeccion(int seccion) {
+    if (seccion == _seccion) return;
+
     setState(() {
       _seccion = seccion;
     });
 
-    if (seccion == 1 && _historialPendiente && !_cargandoHistorial) {
-      _cargarHistorial();
+    // Al abrir Historial se refresca si hubo cambios (pago nuevo) o si los
+    // datos ya están vencidos; con datos en pantalla la actualización es
+    // silenciosa para no reemplazar la lista por un indicador de carga.
+    if (seccion == 1 &&
+        (_historialPendiente || _datosVencidos(_historialActualizadoEn))) {
+      _cargarHistorial(silencioso: _pagos.isNotEmpty);
     }
   }
 
@@ -202,7 +318,7 @@ class _PagosPageState extends State<PagosPage> {
     );
 
     if (!mounted) return;
-    await _cargarHistorial();
+    await _cargarHistorial(silencioso: _pagos.isNotEmpty);
   }
 
   @override
@@ -215,7 +331,9 @@ class _PagosPageState extends State<PagosPage> {
           SafeArea(
             child: RefreshIndicator(
               color: _azulPrincipal,
-              onRefresh: _seccion == 0 ? _cargar : _cargarHistorial,
+              onRefresh: () => _seccion == 0
+                  ? _cargar(silencioso: _consultas.isNotEmpty)
+                  : _cargarHistorial(silencioso: _pagos.isNotEmpty),
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),

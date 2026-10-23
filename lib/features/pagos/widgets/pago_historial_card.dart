@@ -73,7 +73,16 @@ class PagoHistorialCard extends StatelessWidget {
                 ),
               ],
               const SizedBox(height: 6),
-              _fila(Icons.credit_card, pago.metodoPagoEtiqueta),
+              _fila(_iconoMetodo, pago.metodoPagoEtiqueta),
+              if (pago.pasarelaEtiqueta != null) ...[
+                const SizedBox(height: 6),
+                // `pasarela` es el único dato del contrato que distingue un
+                // pago con tarjeta por Stripe de uno registrado en recepción.
+                _fila(
+                  Icons.account_balance_wallet_outlined,
+                  'Pasarela: ${pago.pasarelaEtiqueta}',
+                ),
+              ],
               const SizedBox(height: 14),
               const Divider(height: 1, color: Color(0xFFE4EDF4)),
               const SizedBox(height: 10),
@@ -104,6 +113,22 @@ class PagoHistorialCard extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// Icono del método de pago según el valor real del backend.
+  IconData get _iconoMetodo {
+    switch (pago.metodoPago.trim().toUpperCase()) {
+      case 'EFECTIVO':
+        return Icons.payments_outlined;
+      case 'QR':
+        return Icons.qr_code_2;
+      case 'TRANSFERENCIA':
+        return Icons.account_balance_outlined;
+      case 'TARJETA':
+        return Icons.credit_card;
+      default:
+        return Icons.receipt_outlined;
+    }
   }
 
   Widget _fila(IconData icono, String texto) {

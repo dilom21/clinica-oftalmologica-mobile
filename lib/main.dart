@@ -29,7 +29,9 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Centro Oftalmológico Visión Clara',
+      // Título genérico: la clínica real la identifica el login multitenant y
+      // se muestra dentro de la app una vez autenticado el paciente.
+      title: 'Clínica Oftalmológica',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,

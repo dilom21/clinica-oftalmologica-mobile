@@ -67,8 +67,9 @@ class MiPerfilPaciente {
       nombres: json['nombres'] as String? ?? '',
       apellidos: json['apellidos'] as String? ?? '',
       ci: json['ci'] as String? ?? '',
-      fechaNacimiento:
-          fechaRaw == null ? DateTime(1900) : DateTime.parse(fechaRaw),
+      fechaNacimiento: fechaRaw == null
+          ? DateTime(1900)
+          : DateTime.parse(fechaRaw),
       sexo: sexoRaw ?? '',
       telefono: json['telefono'] as String?,
       contactoEmergencia: json['contacto_emergencia'] as String?,

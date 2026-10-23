@@ -16,8 +16,13 @@ class StripeConfig {
     defaultValue: '',
   );
 
-  /// Nombre del comercio que muestra el PaymentSheet.
-  static const String merchantDisplayName = 'Centro Oftalmológico Visión Clara';
+  /// Nombre del comercio que muestra el PaymentSheet de Stripe.
+  ///
+  /// Es genérico a propósito: el nombre comercial real de la clínica está en
+  /// `GET /seguridad/tenant/empresas` y el backend todavía no expone un nombre
+  /// de comercio por clínica para Stripe. No se escribe el nombre de una
+  /// clínica concreta en el código.
+  static const String merchantDisplayName = 'Clínica Oftalmológica';
 
   /// Indica si hay una clave publicable configurada.
   static bool get estaConfigurada => publishableKey.trim().isNotEmpty;

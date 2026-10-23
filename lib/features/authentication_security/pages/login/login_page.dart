@@ -4,26 +4,36 @@ import 'package:flutter/material.dart';
 
 import '../../models/auth_models.dart';
 import '../../services/auth_service.dart';
+import '../../widgets/clinica_selector.dart';
+import '../register/register_page.dart';
 import '../../../../core/storage/token_storage.dart';
 import '../../../home/pages/main_navigation_page.dart';
-import '../register/register_page.dart';
 
-/// Pantalla de inicio de sesión de la aplicación
-/// "Centro Oftalmológico Visión Clara".
+// El registro de nuevas cuentas vive en `RegisterPage` y siempre se hace dentro
+// de la clínica elegida en el selector (registro multitenant del PASO 3).
+
+/// Pantalla de inicio de sesión de la aplicación móvil multitenant.
+///
+/// La identidad visual es genérica hasta que el paciente elige su clínica: en
+/// ese momento el encabezado muestra el nombre REAL que devolvió
+/// `GET /seguridad/tenant/empresas` (nunca un nombre fijo en el código).
 ///
 /// Solo contiene:
 /// - Interfaz de usuario moderna (fondo degradado, glassmorphism)
 /// - Animación de entrada escalonada
 /// - Movimiento lento del fondo decorativo
 /// - Estado visual (mostrar/ocultar contraseña)
+/// - Selector de clínica (multitenant)
 /// - Validaciones locales del formulario
 /// - Estado de carga mientras se consulta FastAPI
 ///
-/// NOTA: El login consume el endpoint móvil exclusivo de pacientes
-/// `POST /seguridad/login/paciente`. El backend rechaza con 403 a los roles
-/// internos; AuthService además exige que el JWT traiga `rol_id == 4`.
-/// Con un login exitoso se guarda el JWT (TokenStorage) y se navega a
-/// MainNavigationPage.
+/// NOTA: el login es multitenant. Primero se obtienen las clínicas con
+/// `GET /seguridad/tenant/empresas` y el paciente elige una; luego se envían
+/// `empresa_codigo`, `correo` y `password` a `POST /seguridad/tenant/login`.
+/// AuthService solo acepta JWT con `token_type = "tenant"`, `rol_nombre =
+/// "Paciente"` y `empresa_codigo` igual a la clínica elegida.
+/// Con un login exitoso se guarda el JWT junto al código de la clínica
+/// (TokenStorage) y se navega a MainNavigationPage.
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key, this.authService});
 
@@ -51,6 +61,25 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
 
   // Indica si hay una petición de login en curso.
   bool _isLoading = false;
+
+  // Clínicas disponibles para iniciar sesión (GET /seguridad/tenant/empresas).
+  List<EmpresaTenant> _empresas = const [];
+
+  // Indica si se están cargando las clínicas desde FastAPI.
+  bool _cargandoClinicas = true;
+
+  // Mensaje de error al cargar las clínicas (null si no hubo error).
+  String? _errorClinicas;
+
+  // Evita lanzar dos cargas de clínicas en paralelo (por ejemplo, al tocar
+  // varias veces "Reintentar").
+  bool _solicitudClinicasEnCurso = false;
+
+  // Clínica elegida por el paciente; se envía como `empresa_codigo`.
+  EmpresaTenant? _empresaSeleccionada;
+
+  // Error local cuando se intenta iniciar sesión sin clínica.
+  String? _errorSeleccion;
 
   // Servicio que se comunica con el backend FastAPI.
   late final AuthService _authService = widget.authService ?? AuthService();
@@ -139,6 +168,9 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
 
     // Inicia la animación de entrada al abrir la pantalla.
     _entranceController.forward();
+
+    // Obtiene las clínicas del backend (no se escriben a mano en la app).
+    _cargarClinicas();
   }
 
   @override
@@ -161,6 +193,93 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     });
   }
 
+  /// Carga las clínicas disponibles desde FastAPI.
+  ///
+  /// Maneja los tres estados de la sección: carga, error (con reintento) y
+  /// lista vacía. Si la clínica elegida ya no aparece en la nueva lista se
+  /// limpia la selección para no autenticarse contra una clínica obsoleta.
+  Future<void> _cargarClinicas() async {
+    if (_solicitudClinicasEnCurso) {
+      return;
+    }
+
+    _solicitudClinicasEnCurso = true;
+
+    setState(() {
+      _cargandoClinicas = true;
+      _errorClinicas = null;
+    });
+
+    try {
+      final List<EmpresaTenant> empresas = await _authService.listarEmpresas();
+
+      if (!mounted) return;
+
+      setState(() {
+        _empresas = empresas;
+        _cargandoClinicas = false;
+
+        final EmpresaTenant? seleccionada = _empresaSeleccionada;
+
+        if (seleccionada != null &&
+            !empresas.any((empresa) => empresa.codigo == seleccionada.codigo)) {
+          _empresaSeleccionada = null;
+        }
+      });
+    } on AuthException catch (error) {
+      if (!mounted) return;
+
+      setState(() {
+        _empresas = const [];
+        _cargandoClinicas = false;
+        _errorClinicas = error.message;
+        _empresaSeleccionada = null;
+      });
+    } catch (_) {
+      if (!mounted) return;
+
+      setState(() {
+        _empresas = const [];
+        _cargandoClinicas = false;
+        _errorClinicas =
+            'No se pudieron cargar las clínicas. Inténtalo de nuevo.';
+        _empresaSeleccionada = null;
+      });
+    } finally {
+      _solicitudClinicasEnCurso = false;
+    }
+  }
+
+  /// Abre la hoja inferior con las clínicas devueltas por FastAPI.
+  Future<void> _abrirSelectorClinica() async {
+    if (_isLoading || _cargandoClinicas || _empresas.isEmpty) {
+      return;
+    }
+
+    final EmpresaTenant? seleccionada =
+        await showModalBottomSheet<EmpresaTenant>(
+          context: context,
+          isScrollControlled: true,
+          backgroundColor: Colors.white,
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          builder: (_) => ClinicaSheet(
+            empresas: _empresas,
+            seleccionada: _empresaSeleccionada,
+          ),
+        );
+
+    if (seleccionada == null || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _empresaSeleccionada = seleccionada;
+      _errorSeleccion = null;
+    });
+  }
+
   /// Valida el formulario y, si es válido, inicia la petición de login.
   void _handleLogin() {
     // Microanimación de escala al presionar el botón.
@@ -171,23 +290,50 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
       return;
     }
 
+    if (_cargandoClinicas) {
+      _showMessage('Espera a que se carguen las clínicas disponibles.');
+      return;
+    }
+
+    // Sin una clínica válida del listado no se envía ninguna petición.
+    if (_empresaSeleccionada == null) {
+      setState(() {
+        _errorSeleccion = 'Selecciona la clínica donde tienes tu cuenta';
+      });
+      _showMessage('Selecciona la clínica donde tienes tu cuenta');
+      return;
+    }
+
+    setState(() {
+      _errorSeleccion = null;
+    });
+
     if (_formKey.currentState!.validate()) {
       _login();
     }
   }
 
-  /// Llama a AuthService.loginPaciente() contra FastAPI.
+  /// Llama a AuthService.loginPaciente() contra la clínica seleccionada.
   ///
-  /// AuthService solo devuelve una sesión cuando el usuario autenticado es
-  /// paciente (`rol_id == 4`). Con un login exitoso guarda el access_token
-  /// con TokenStorage y navega a MainNavigationPage eliminando LoginPage del
-  /// historial. Si el usuario no es paciente, no se guarda ningún token.
+  /// AuthService solo devuelve una sesión cuando el JWT cumple el contrato
+  /// tenant (rol `Paciente`, `token_type` `tenant` y la clínica elegida). Con
+  /// un login exitoso guarda el JWT junto al código/nombre de la clínica
+  /// (TokenStorage, descartando la sesión anterior) y navega a
+  /// MainNavigationPage eliminando LoginPage del historial. Si el JWT se
+  /// rechaza, no se guarda ningún token y se borra la sesión previa.
   Future<void> _login() async {
+    final EmpresaTenant? empresa = _empresaSeleccionada;
+
+    if (empresa == null) {
+      return;
+    }
+
     setState(() {
       _isLoading = true;
     });
 
     final request = LoginRequest(
+      empresaCodigo: empresa.codigo,
       correo: _emailController.text.trim(),
       password: _passwordController.text,
     );
@@ -195,8 +341,13 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     try {
       final LoginResponse response = await _authService.loginPaciente(request);
 
-      // Guardar el JWT de forma segura antes de navegar.
-      await TokenStorage().saveToken(response.accessToken);
+      // Guardar el JWT de forma segura junto a la clínica autenticada. Esto
+      // elimina cualquier token legacy o de otra clínica antes de navegar.
+      await TokenStorage().saveTenantSession(
+        token: response.accessToken,
+        empresaCodigo: empresa.codigo,
+        empresaNombre: empresa.nombre,
+      );
 
       if (!mounted) return;
       setState(() {
@@ -208,9 +359,12 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
         (route) => false,
       );
     } on AuthException catch (error) {
-      // Si quien se autenticó no es paciente, se descarta cualquier token.
-      if (error.message == AuthService.mensajeSoloParaPacientes) {
-        await TokenStorage().deleteToken();
+      // Si el JWT no cumple el contrato tenant (rol distinto de Paciente,
+      // `token_type` que no es `tenant`, claims obligatorios ausentes o
+      // clínica diferente) se descarta cualquier sesión anterior: nunca se
+      // reutiliza un token que la app no pudo validar.
+      if (error.sesionRechazada) {
+        await TokenStorage().deleteSession();
       }
 
       if (!mounted) return;
@@ -229,15 +383,54 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     }
   }
 
-  /// Navega a RegisterPage y, al volver, precarga el correo registrado.
+  /// Abre el registro de una cuenta nueva en la clínica seleccionada.
+  ///
+  /// La clínica es obligatoria: sin ella no se abre el formulario, para no
+  /// crear cuentas en una base equivocada. [RegisterPage] recibe la clínica en
+  /// modo de solo lectura y la envía como `empresa_codigo` en
+  /// `POST /seguridad/tenant/registro-paciente`.
+  ///
+  /// La clínica se captura antes de navegar, así que no puede cambiar mientras
+  /// el paciente completa el formulario. Cuando el registro termina con 201,
+  /// [RegisterPage] devuelve el correo registrado: se precarga en el login, se
+  /// conserva la misma clínica y el paciente solo escribe su contraseña (sin
+  /// autologin ni transporte de contraseñas entre pantallas).
   Future<void> _openRegister() async {
-    final correoRegistrado = await Navigator.of(context).push<String>(
-      MaterialPageRoute<String>(builder: (_) => const RegisterPage()),
+    if (_isLoading) {
+      return;
+    }
+
+    if (_cargandoClinicas) {
+      _showMessage('Espera a que se carguen las clínicas disponibles.');
+      return;
+    }
+
+    final EmpresaTenant? empresa = _empresaSeleccionada;
+
+    if (empresa == null) {
+      setState(() {
+        _errorSeleccion = 'Selecciona la clínica para crear tu cuenta';
+      });
+      _showMessage('Selecciona la clínica para crear tu cuenta');
+      return;
+    }
+
+    final String? correo = await Navigator.of(context).push<String>(
+      MaterialPageRoute<String>(
+        builder: (_) =>
+            RegisterPage(empresa: empresa, authService: _authService),
+      ),
     );
 
-    if (correoRegistrado != null && correoRegistrado.isNotEmpty && mounted) {
-      _emailController.text = correoRegistrado;
+    if (!mounted || correo == null) {
+      return;
     }
+
+    setState(() {
+      _errorSeleccion = null;
+      _emailController.text = correo;
+      _passwordController.clear();
+    });
   }
 
   /// Muestra un SnackBar breve con el mensaje indicado.
@@ -270,23 +463,53 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     );
   }
 
-  /// Bloque del logo e identidad visual (fade + escala).
-  Widget _buildLogoBlock() {
+  /// Bloque de identidad visual (fade + escala).
+  ///
+  /// Muestra la clínica REAL elegida por el paciente (nombre que devolvió
+  /// `GET /seguridad/tenant/empresas`). Antes de elegirla, o si el listado no
+  /// se pudo cargar, se muestra una identidad genérica de la app.
+  ///
+  /// No se usa el logotipo de una clínica concreta: el backend todavía no
+  /// entrega una fuente de imagen por clínica.
+  Widget _buildIdentidadBlock() {
+    final EmpresaTenant? empresa = _empresaSeleccionada;
+
     return FadeTransition(
       opacity: _logoEntrance,
       child: ScaleTransition(
         scale: _logoScale,
         child: Column(
           children: [
-            // Logo oficial de la clínica.
-            Image.asset(
-              'assets/images/logo_vision_clara.png',
-              height: 110,
-              fit: BoxFit.contain,
+            // Icono neutro (sin marca de una clínica específica).
+            Container(
+              key: const Key('login-identidad-icono'),
+              width: 96,
+              height: 96,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFFD6ECFA), Color(0xFFB7E3F9)],
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF1976D2).withValues(alpha: 0.16),
+                    blurRadius: 18,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: const Icon(
+                Icons.local_hospital_outlined,
+                size: 46,
+                color: Color(0xFF0D47A1),
+              ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 14),
             Text(
-              'Visión Clara',
+              empresa?.nombre ?? 'Clínica Oftalmológica',
+              key: const Key('login-clinica-identidad'),
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                 fontWeight: FontWeight.bold,
@@ -295,7 +518,9 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
             ),
             const SizedBox(height: 4),
             Text(
-              'Centro Oftalmológico',
+              empresa == null
+                  ? 'Selecciona tu clínica para continuar'
+                  : 'Portal del paciente',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.titleMedium
                   ?.copyWith(color: const Color(0xFF547799)),
@@ -366,6 +591,17 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                     animation: _fieldsEntrance,
                     child: Column(
                       children: [
+                        ClinicaSelector(
+                          cargando: _cargandoClinicas,
+                          error: _errorClinicas,
+                          empresas: _empresas,
+                          seleccionada: _empresaSeleccionada,
+                          errorSeleccion: _errorSeleccion,
+                          habilitado: !_isLoading,
+                          onReintentar: _cargarClinicas,
+                          onAbrir: _abrirSelectorClinica,
+                        ),
+                        const SizedBox(height: 16),
                         _buildEmailField(),
                         const SizedBox(height: 16),
                         _buildPasswordField(),
@@ -674,8 +910,8 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        // Bloque 1: Logo + identidad visual.
-                        _buildLogoBlock(),
+                        // Bloque 1: Identidad de la clínica (dinámica).
+                        _buildIdentidadBlock(),
 
                         const SizedBox(height: 28),
 
