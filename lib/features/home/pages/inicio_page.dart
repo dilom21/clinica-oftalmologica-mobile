@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/session/sesion_clinica.dart';
+import '../../informacion_clinica/pages/informacion_clinica_page.dart';
 
 /// Pantalla de bienvenida que se muestra después del inicio de sesión.
 ///
@@ -75,10 +76,14 @@ class _InicioPageState extends State<InicioPage> with TickerProviderStateMixin {
           const Positioned.fill(child: _FondoDecorativo()),
 
           SafeArea(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 32),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 420),
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 32,
+                ),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 420),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
@@ -178,6 +183,7 @@ class _InicioPageState extends State<InicioPage> with TickerProviderStateMixin {
                     ),
                   ],
                 ),
+                ),
               ),
             ),
           ),
@@ -254,6 +260,22 @@ class _TarjetaBienvenida extends StatelessWidget {
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium
                   ?.copyWith(color: const Color(0xFF5C6F80), height: 1.45),
+            ),
+            const SizedBox(height: 22),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                key: const Key('inicio-consultar-informacion-clinica'),
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const InformacionClinicaPage(),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.medical_information_outlined),
+                label: const Text('Consultar información clínica'),
+              ),
             ),
           ],
         ),
