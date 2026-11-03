@@ -192,10 +192,21 @@ class _ServiciosPagoPageState extends State<ServiciosPagoPage> {
       // HTTP 409 = protección anti-doble cobro del backend.
       // NO se genera otra intención automáticamente.
       if (error.statusCode == 409) {
+        // El backend rechaza el cobro individual cuando el servicio ya está
+        // reservado por un plan de pago (CU32/CU33). En ese caso no se ofrece
+        // un cobro individual engañoso: se indica dónde pagarlo.
+        final bool reservadoPorPlan = error.message.toLowerCase().contains(
+          'plan de pago',
+        );
+
         await _dialogo(
-          'Pago en curso',
-          '${error.message}\n\nActualiza el estado de tus servicios antes de '
-              'intentarlo de nuevo.',
+          reservadoPorPlan ? 'Servicio incluido en un plan' : 'Pago en curso',
+          reservadoPorPlan
+              ? '${error.message}\n\nEste servicio está financiado en un plan '
+                    'de pago. Págalo desde la sección "Planes y cuotas" para '
+                    'no duplicar cobros.'
+              : '${error.message}\n\nActualiza el estado de tus servicios '
+                    'antes de intentarlo de nuevo.',
         );
         await _cargar();
         return;
