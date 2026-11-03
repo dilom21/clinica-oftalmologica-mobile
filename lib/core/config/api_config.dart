@@ -6,6 +6,6 @@
 class ApiConfig {
   static const String baseUrl = String.fromEnvironment(
     'API_URL',
-    defaultValue: 'http://127.0.0.1:8000',
+    defaultValue: 'https://clinica-oftalmologica-api.duckdns.org',
   );
 }
