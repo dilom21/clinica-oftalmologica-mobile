@@ -5,8 +5,10 @@ import '../../authentication_security/pages/login/login_page.dart';
 import '../models/pago_models.dart';
 import '../services/comprobante_archivo_service.dart';
 import '../services/pagos_service.dart';
+import '../services/planes_cuotas_service.dart';
 import '../services/stripe_payment_service.dart';
 import '../widgets/consulta_pago_card.dart';
+import '../widgets/mis_planes_seccion.dart';
 import '../widgets/pago_historial_card.dart';
 import '../widgets/pagos_vistas.dart';
 import 'comprobante_pago_page.dart';
@@ -15,22 +17,25 @@ import 'servicios_pago_page.dart';
 
 /// Pantalla principal del módulo Pagos.
 ///
-/// Tiene dos vistas conmutables mediante un selector:
+/// Tiene tres vistas conmutables mediante un selector:
 ///
 /// - **Consultas:** lista las consultas clínicas del paciente con su resumen de
 ///   pago y permite entrar a los servicios de cada consulta para pagarlos.
+/// - **Planes y cuotas:** lista los planes de pago del paciente (CU32) y
+///   permite abrir el detalle de cada plan con sus cuotas (CU33).
 /// - **Historial:** lista los pagos del paciente (más recientes primero) y
 ///   permite ver el detalle y el comprobante PDF de los pagos APROBADOS.
 ///
-/// El historial se consulta SOLO al abrir su sección (operación de lectura), de
-/// forma que abrir la pantalla nunca crea intenciones de pago. El contenedor de
-/// pestañas puede pedir una actualización mediante
+/// El historial y los planes se consultan SOLO al abrir su sección (operación
+/// de lectura), de forma que abrir la pantalla nunca crea intenciones de pago.
+/// El contenedor de pestañas puede pedir una actualización mediante
 /// [PagosPageState.alMostrarPestana] cuando el paciente vuelve a la pestaña
 /// Pagos.
 class PagosPage extends StatefulWidget {
   const PagosPage({
     super.key,
     this.pagosService,
+    this.planesService,
     this.stripeService,
     this.archivoService = const ComprobanteArchivoService(),
     this.visor = visorComprobantePdf,
@@ -39,6 +44,9 @@ class PagosPage extends StatefulWidget {
 
   /// Servicio HTTP de pagos; inyectable en pruebas.
   final PagosService? pagosService;
+
+  /// Servicio de planes y cuotas (CU32/CU33); inyectable en pruebas.
+  final PlanesCuotasService? planesService;
 
   /// Servicio de Stripe; inyectable en pruebas.
   final StripePaymentService? stripeService;
@@ -76,8 +84,12 @@ class PagosPageState extends State<PagosPage> {
   bool _cargando = true;
   String? _error;
 
-  /// Sección visible: 0 = Consultas, 1 = Historial.
+  /// Sección visible: 0 = Consultas, 1 = Planes y cuotas, 2 = Historial.
   int _seccion = 0;
+
+  /// Permite pedir a la sección de planes una actualización al mostrarse.
+  final GlobalKey<MisPlanesSeccionState> _planesKey =
+      GlobalKey<MisPlanesSeccionState>();
 
   List<PagoHistorial> _pagos = const [];
   bool _cargandoHistorial = false;
@@ -129,6 +141,11 @@ class PagosPageState extends State<PagosPage> {
     if (_seccion == 0) {
       if (!_datosVencidos(_consultasActualizadasEn)) return;
       await _cargar(silencioso: _consultas.isNotEmpty);
+      return;
+    }
+
+    if (_seccion == 1) {
+      await _planesKey.currentState?.alMostrar();
       return;
     }
 
@@ -298,9 +315,15 @@ class PagosPageState extends State<PagosPage> {
     // Al abrir Historial se refresca si hubo cambios (pago nuevo) o si los
     // datos ya están vencidos; con datos en pantalla la actualización es
     // silenciosa para no reemplazar la lista por un indicador de carga.
-    if (seccion == 1 &&
+    if (seccion == 2 &&
         (_historialPendiente || _datosVencidos(_historialActualizadoEn))) {
       _cargarHistorial(silencioso: _pagos.isNotEmpty);
+    }
+
+    // Los planes se refrescan al abrir la sección si pudo registrarse un pago
+    // o si sus datos vencieron (la sección decide con su propia antigüedad).
+    if (seccion == 1) {
+      _planesKey.currentState?.alMostrar();
     }
   }
 
@@ -331,9 +354,15 @@ class PagosPageState extends State<PagosPage> {
           SafeArea(
             child: RefreshIndicator(
               color: _azulPrincipal,
-              onRefresh: () => _seccion == 0
-                  ? _cargar(silencioso: _consultas.isNotEmpty)
-                  : _cargarHistorial(silencioso: _pagos.isNotEmpty),
+              onRefresh: () async {
+                if (_seccion == 0) {
+                  await _cargar(silencioso: _consultas.isNotEmpty);
+                } else if (_seccion == 1) {
+                  await _planesKey.currentState?.refrescar();
+                } else {
+                  await _cargarHistorial(silencioso: _pagos.isNotEmpty);
+                }
+              },
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
@@ -348,7 +377,14 @@ class PagosPageState extends State<PagosPage> {
                       const SizedBox(height: 16),
                     ],
                     _contenido(),
-                  ] else
+                  ] else if (_seccion == 1)
+                    MisPlanesSeccion(
+                      key: _planesKey,
+                      planesService: widget.planesService,
+                      stripeService: _stripeService,
+                      alCerrarSesion: widget.alCerrarSesion,
+                    )
+                  else
                     _contenidoHistorial(),
                 ],
               ),
@@ -359,31 +395,40 @@ class PagosPageState extends State<PagosPage> {
     );
   }
 
-  /// Selector entre las dos vistas del módulo: Consultas e Historial.
+  /// Selector entre las tres vistas del módulo: Consultas, Planes y cuotas e
+  /// Historial.
   Widget _selector() {
-    return SegmentedButton<int>(
-      segments: const [
-        ButtonSegment<int>(
-          value: 0,
-          label: Text('Consultas'),
-          icon: Icon(Icons.list_alt_outlined),
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: SegmentedButton<int>(
+        segments: const [
+          ButtonSegment<int>(
+            value: 0,
+            label: Text('Consultas'),
+            icon: Icon(Icons.list_alt_outlined),
+          ),
+          ButtonSegment<int>(
+            value: 1,
+            label: Text('Planes y cuotas'),
+            icon: Icon(Icons.event_note_outlined),
+          ),
+          ButtonSegment<int>(
+            value: 2,
+            label: Text('Historial'),
+            icon: Icon(Icons.receipt_long_outlined),
+          ),
+        ],
+        selected: {_seccion},
+        showSelectedIcon: false,
+        style: SegmentedButton.styleFrom(
+          backgroundColor: Colors.white,
+          foregroundColor: const Color(0xFF5C6F80),
+          selectedBackgroundColor: const Color(0xFFD8ECFA),
+          selectedForegroundColor: _azulProfundo,
+          side: const BorderSide(color: Color(0xFFCDE3F5)),
         ),
-        ButtonSegment<int>(
-          value: 1,
-          label: Text('Historial'),
-          icon: Icon(Icons.receipt_long_outlined),
-        ),
-      ],
-      selected: {_seccion},
-      showSelectedIcon: false,
-      style: SegmentedButton.styleFrom(
-        backgroundColor: Colors.white,
-        foregroundColor: const Color(0xFF5C6F80),
-        selectedBackgroundColor: const Color(0xFFD8ECFA),
-        selectedForegroundColor: _azulProfundo,
-        side: const BorderSide(color: Color(0xFFCDE3F5)),
+        onSelectionChanged: (seleccion) => _cambiarSeccion(seleccion.first),
       ),
-      onSelectionChanged: (seleccion) => _cambiarSeccion(seleccion.first),
     );
   }
 

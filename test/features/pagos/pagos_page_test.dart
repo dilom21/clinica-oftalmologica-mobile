@@ -7,6 +7,7 @@ import 'package:http/testing.dart';
 
 import 'package:clinica_oftalmologica_mobile/features/pagos/pages/pagos_page.dart';
 import 'package:clinica_oftalmologica_mobile/features/pagos/services/pagos_service.dart';
+import 'package:clinica_oftalmologica_mobile/features/pagos/services/planes_cuotas_service.dart';
 import 'package:clinica_oftalmologica_mobile/features/pagos/services/stripe_payment_service.dart';
 
 const _jsonHeaders = {'content-type': 'application/json'};
@@ -103,5 +104,53 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Consulta del 01/09/2026'), findsOneWidget);
+  });
+
+  testWidgets('el selector ofrece Planes y cuotas y consulta los planes', (
+    tester,
+  ) async {
+    final rutas = <String>[];
+    final consultas = _service((request) async {
+      rutas.add(request.url.path);
+      return _json(const <Object>[], 200);
+    });
+    final planes = PlanesCuotasService(
+      client: MockClient((request) async {
+        rutas.add(request.url.path);
+        return _json({
+          'items': const <Object>[],
+          'total': 0,
+          'page': 1,
+          'page_size': 50,
+          'total_pages': 0,
+        }, 200);
+      }),
+      leerToken: () async => 'token',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PagosPage(
+          pagosService: consultas,
+          planesService: planes,
+          stripeService: StripePaymentService(publishableKey: 'pk_test_fake'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Consultas'), findsOneWidget);
+    expect(find.text('Planes y cuotas'), findsOneWidget);
+    expect(find.text('Historial'), findsOneWidget);
+
+    await tester.tap(find.text('Planes y cuotas'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Mis planes de pago'), findsOneWidget);
+    expect(
+      find.text('No tienes planes de pago registrados por el momento.'),
+      findsOneWidget,
+    );
+    expect(rutas.contains('/pagos/mis-planes'), isTrue);
   });
 }
