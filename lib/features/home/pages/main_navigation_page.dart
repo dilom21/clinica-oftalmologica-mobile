@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/session/sesion_clinica.dart';
+import '../../../core/storage/token_storage.dart';
 import 'inicio_page.dart';
+import '../../authentication_security/pages/login/login_page.dart';
 import '../../citas/pages/citas_page.dart';
+import '../../informacion_clinica/pages/informacion_clinica_page.dart';
 import '../../pagos/pages/pagos_page.dart';
 import '../../pagos/services/pagos_service.dart';
 import '../../pagos/services/stripe_payment_service.dart';
@@ -43,8 +46,17 @@ class MainNavigationPage extends StatefulWidget {
   State<MainNavigationPage> createState() => _MainNavigationPageState();
 }
 
-class _MainNavigationPageState extends State<MainNavigationPage> {
+class _MainNavigationPageState extends State<MainNavigationPage>
+    with WidgetsBindingObserver {
   int _selectedIndex = 0;
+
+  /// Permite pedir a Inicio que refresque su próxima cita al volver a su
+  /// pestaña o cuando una cita cambia.
+  final GlobalKey<InicioPageState> _inicioKey = GlobalKey<InicioPageState>();
+
+  /// Permite pedir a Citas que refresque la vista visible y abrir directamente
+  /// el agendamiento o el listado desde Inicio.
+  final GlobalKey<CitasPageState> _citasKey = GlobalKey<CitasPageState>();
 
   /// Permite pedir a Pagos que refresque sus datos al volver a su pestaña.
   ///
@@ -63,17 +75,27 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
     if (!_sesionClinica.cargada) {
       _sesionClinica.cargar();
     }
+    // Al volver del segundo plano se refresca la pestaña visible: una cita o un
+    // pago registrados en recepción deben verse sin reiniciar la app.
+    WidgetsBinding.instance.addObserver(this);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     if (widget.sesionClinica == null) {
       _sesionClinica.dispose();
     }
     super.dispose();
   }
 
-  /// Cambia de pestaña y actualiza Pagos cuando vuelve a mostrarse.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    _alMostrarPestana(_selectedIndex);
+  }
+
+  /// Cambia de pestaña y pide a la nueva pestaña que refresque sus datos.
   void _seleccionar(int index) {
     if (index == _selectedIndex) return;
 
@@ -81,10 +103,65 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
       _selectedIndex = index;
     });
 
+    _alMostrarPestana(index);
+  }
+
+  /// Refresco silencioso de la pestaña que se está mostrando.
+  void _alMostrarPestana(int index) {
+    if (index == 0) {
+      _inicioKey.currentState?.alMostrarPestana();
+      return;
+    }
+    if (index == 1) {
+      _citasKey.currentState?.alMostrarPestana();
+      return;
+    }
     if (index == 2) {
       // Solo lectura (consultas/historial): nunca crea una intención de pago.
       _pagosKey.currentState?.alMostrarPestana();
     }
+  }
+
+  /// Lleva al paciente a Citas, en la vista que pidió desde Inicio.
+  void _abrirCitas({required bool agendar}) {
+    if (_selectedIndex != 1) {
+      setState(() {
+        _selectedIndex = 1;
+      });
+    }
+
+    final CitasPageState? citas = _citasKey.currentState;
+    if (agendar) {
+      citas?.abrirAgendarCita();
+      return;
+    }
+    citas?.abrirMisCitas();
+  }
+
+  /// Abre la información clínica de la clínica autenticada.
+  void _abrirInformacionClinica() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => InformacionClinicaPage(alCerrarSesion: _sesionInvalida),
+      ),
+    );
+  }
+
+  /// Una cita creada, reprogramada o cancelada obliga a refrescar Inicio.
+  void _alCambiarCitas() {
+    _inicioKey.currentState?.alMostrarPestana();
+  }
+
+  /// 401 en Citas: se borra el JWT, se olvida la clínica y se vuelve al login.
+  Future<void> _sesionInvalida() async {
+    await TokenStorage().deleteToken();
+    _sesionClinica.limpiar();
+
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute<void>(builder: (_) => const LoginPage()),
+      (route) => false,
+    );
   }
 
   @override
@@ -97,8 +174,20 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
         builder: (context, _) => IndexedStack(
           index: _selectedIndex,
           children: <Widget>[
-            InicioPage(clinica: _sesionClinica.clinica),
-            const CitasPage(),
+            InicioPage(
+              key: _inicioKey,
+              clinica: _sesionClinica.clinica,
+              onAgendarCita: () => _abrirCitas(agendar: true),
+              onVerMisCitas: () => _abrirCitas(agendar: false),
+              onVerPagos: () => _seleccionar(2),
+              onVerInformacionClinica: _abrirInformacionClinica,
+            ),
+            CitasPage(
+              key: _citasKey,
+              clinica: _sesionClinica.clinica,
+              onSesionInvalida: _sesionInvalida,
+              onCitasCambiadas: _alCambiarCitas,
+            ),
             PagosPage(
               key: _pagosKey,
               pagosService: widget.pagosService,
