@@ -1,18 +1,46 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/session/sesion_clinica.dart';
+import '../../citas/models/agenda_models.dart';
+import '../../citas/models/cita_models.dart';
+import '../../citas/services/agenda_service.dart';
+import '../../citas/widgets/citas_ui.dart';
 import '../../informacion_clinica/pages/informacion_clinica_page.dart';
+import '../../perfil_paciente/models/mi_perfil_paciente.dart';
+import '../../perfil_paciente/services/paciente_service.dart';
 
-/// Pantalla de bienvenida que se muestra después del inicio de sesión.
+/// Panel de Inicio del paciente autenticado.
 ///
-/// Muestra la identidad de la clínica autenticada ([ClinicaSesion], datos
-/// reales de `GET /seguridad/tenant/empresas`) y una tarjeta indicando que el
-/// sistema móvil está en construcción.
+/// Es un panel real: no hay textos de "sistema en construcción". Se alimenta
+/// únicamente de datos del backend:
 ///
-/// El backend todavía no entrega un logotipo por clínica, así que NO se usa el
-/// logotipo de una clínica concreta: se muestra un icono neutro.
+/// - `GET /pacientes/me`       -> saludo con el nombre y las iniciales reales.
+/// - `GET /agenda-citas/citas` -> próxima cita vigente del paciente.
+///
+/// El nombre del oftalmólogo no viene en `CitaResponse`: se cruza
+/// `oftalmologo_id` con `GET /agenda-citas/oftalmologos` (dato real). Si esa
+/// consulta falla se muestra `Oftalmólogo asignado`, nunca un nombre inventado.
+///
+/// La clínica mostrada proviene siempre de [ClinicaSesion] (sesión guardada por
+/// el login multitenant), nunca de un texto fijo.
+///
+/// Reglas de robustez:
+/// - El perfil es información complementaria: si falla, el saludo cae en la
+///   identidad de la clínica y el panel sigue funcionando.
+/// - Un 401 NO expulsa al paciente desde Inicio: el panel se ve incluso
+///   mientras la sesión se está leyendo del almacenamiento seguro. Quien exige
+///   datos (Citas, Pagos, Perfil) es quien cierra la sesión.
 class InicioPage extends StatefulWidget {
-  const InicioPage({super.key, this.clinica});
+  const InicioPage({
+    super.key,
+    this.clinica,
+    this.pacienteService,
+    this.agendaService,
+    this.onAgendarCita,
+    this.onVerMisCitas,
+    this.onVerPagos,
+    this.onVerInformacionClinica,
+  });
 
   /// Clínica de la sesión activa.
   ///
@@ -20,170 +48,208 @@ class InicioPage extends StatefulWidget {
   /// identificar la clínica; en ese caso se muestra una bienvenida genérica.
   final ClinicaSesion? clinica;
 
+  /// Servicio del paciente (`GET /pacientes/me`); inyectable en pruebas.
+  final PacienteService? pacienteService;
+
+  /// Servicio de agenda/citas; inyectable en pruebas.
+  final AgendaService? agendaService;
+
+  /// Abre el flujo de agendamiento (pestaña Citas).
+  final VoidCallback? onAgendarCita;
+
+  /// Abre el listado de citas del paciente (pestaña Citas).
+  final VoidCallback? onVerMisCitas;
+
+  /// Abre el historial de pagos (pestaña Pagos).
+  final VoidCallback? onVerPagos;
+
+  /// Abre la información clínica de la clínica.
+  final VoidCallback? onVerInformacionClinica;
+
   @override
-  State<InicioPage> createState() => _InicioPageState();
+  State<InicioPage> createState() => InicioPageState();
 }
 
-class _InicioPageState extends State<InicioPage> with TickerProviderStateMixin {
-  // Colores de la identidad visual de la app (neutros, sin marca de clínica).
-  static const Color _azulProfundo = Color(0xFF0D47A1);
-  static const Color _azulPrincipal = Color(0xFF1976D2);
+class InicioPageState extends State<InicioPage> {
+  late final PacienteService _paciente =
+      widget.pacienteService ?? PacienteService();
+  late final AgendaService _agenda = widget.agendaService ?? AgendaService();
 
-  // Controla la animación de entrada escalonada.
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 800),
-  );
+  MiPerfilPaciente? _perfil;
+  List<Cita> _citas = const <Cita>[];
+  Map<int, OftalmologoAgenda> _oftalmologos = const <int, OftalmologoAgenda>{};
 
-  late final Animation<double> _logoEntrance = CurvedAnimation(
-    parent: _controller,
-    curve: const Interval(0.0, 0.35, curve: Curves.easeOutCubic),
-  );
-  late final Animation<double> _titleEntrance = CurvedAnimation(
-    parent: _controller,
-    curve: const Interval(0.25, 0.6, curve: Curves.easeOutCubic),
-  );
-  late final Animation<double> _cardEntrance = CurvedAnimation(
-    parent: _controller,
-    curve: const Interval(0.55, 1.0, curve: Curves.easeOutCubic),
-  );
-
-  late final Animation<double> _logoScale = Tween<double>(
-    begin: 0.95,
-    end: 1.0,
-  ).animate(_logoEntrance);
+  /// Solo el panel de la próxima cita usa estado de carga/error: el resto del
+  /// dashboard es contenido estático y no debe parpadear.
+  bool _cargando = true;
+  String? _error;
 
   @override
   void initState() {
     super.initState();
-    _controller.forward();
+    _cargar();
   }
 
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
+  // -------------------------------------------------------------------
+  // API pública para el contenedor de pestañas
+  // -------------------------------------------------------------------
+
+  /// Refresco silencioso cuando el paciente vuelve a la pestaña Inicio.
+  ///
+  /// El panel debe mostrar la cita recién reservada sin reiniciar la app, pero
+  /// sin tapar la pantalla con un indicador de carga.
+  void alMostrarPestana() {
+    _cargar(silencioso: true);
   }
+
+  // -------------------------------------------------------------------
+  // Datos reales
+  // -------------------------------------------------------------------
+
+  /// Carga el perfil y las citas del paciente autenticado.
+  Future<void> _cargar({bool silencioso = false}) async {
+    if (!silencioso) {
+      setState(() {
+        _cargando = true;
+        _error = null;
+      });
+    }
+
+    // 1) Perfil: complementario. Un fallo aquí no rompe el panel.
+    MiPerfilPaciente? perfil;
+    try {
+      perfil = await _paciente.obtenerMiPerfil();
+    } on PacienteException {
+      perfil = null;
+    } catch (_) {
+      perfil = null;
+    }
+
+    if (!mounted) return;
+
+    // 2) Citas: es el dato principal del panel.
+    try {
+      final List<Cita> citas = await _agenda.listarCitas();
+      final Map<int, OftalmologoAgenda> medicos = await _nombresMedicos(citas);
+
+      if (!mounted) return;
+      setState(() {
+        _perfil = perfil;
+        _citas = citas;
+        _oftalmologos = medicos;
+        _cargando = false;
+        _error = null;
+      });
+    } on AgendaException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _perfil = perfil;
+        _cargando = false;
+        _error = error.statusCode == 401
+            ? 'Inicia sesión de nuevo para ver tus citas.'
+            : error.message;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _perfil = perfil;
+        _cargando = false;
+        _error = 'No se pudo cargar tu agenda. Inténtalo de nuevo.';
+      });
+    }
+  }
+
+  /// Cruza `oftalmologo_id` con el catálogo real de oftalmólogos.
+  ///
+  /// Solo se pide el catálogo si hay citas que mostrar; si falla, el nombre del
+  /// médico se omite y se usa `Oftalmólogo asignado` (nunca se inventa).
+  Future<Map<int, OftalmologoAgenda>> _nombresMedicos(List<Cita> citas) async {
+    if (citas.isEmpty) return _oftalmologos;
+    if (_oftalmologos.isNotEmpty) return _oftalmologos;
+
+    try {
+      final List<OftalmologoAgenda> lista = await _agenda.listarOftalmologos();
+      return <int, OftalmologoAgenda>{
+        for (final OftalmologoAgenda oftalmologo in lista)
+          oftalmologo.id: oftalmologo,
+      };
+    } catch (_) {
+      return _oftalmologos;
+    }
+  }
+
+  // -------------------------------------------------------------------
+  // Datos derivados
+  // -------------------------------------------------------------------
+
+  /// Cita vigente más cercana (futura y no cancelada / atendida / no asistida).
+  Cita? get _proximaCita {
+    final List<Cita> vigentes = <Cita>[
+      for (final Cita cita in _citas)
+        if (cita.estaVigente && cita.esFutura) cita,
+    ]..sort((Cita a, Cita b) => a.inicio.compareTo(b.inicio));
+
+    return vigentes.isEmpty ? null : vigentes.first;
+  }
+
+  /// Saludo del panel: nombre real del paciente y, si no está disponible, la
+  /// identidad de la clínica autenticada o una bienvenida genérica.
+  String get _saludo {
+    final MiPerfilPaciente? perfil = _perfil;
+    final String nombre = perfil == null
+        ? ''
+        : _capitalizar(_primerNombre(perfil.nombres));
+
+    if (nombre.isNotEmpty) return 'Hola, $nombre';
+
+    final ClinicaSesion? clinica = widget.clinica;
+    if (clinica != null && clinica.etiqueta.trim().isNotEmpty) {
+      return 'Bienvenido a ${clinica.etiqueta.trim()}';
+    }
+
+    return 'Bienvenido';
+  }
+
+  /// Iniciales del paciente para el avatar (`AQ`); vacío si no hay perfil.
+  String get _iniciales {
+    final MiPerfilPaciente? perfil = _perfil;
+    if (perfil == null) return '';
+
+    final String nombres = _primerNombre(perfil.nombres);
+    final String apellidos = _primerNombre(perfil.apellidos);
+    final String iniciales = '${_letra(nombres)}${_letra(apellidos)}';
+    return iniciales.toUpperCase();
+  }
+
+  // -------------------------------------------------------------------
+  // Interfaz
+  // -------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
-    final ClinicaSesion? clinica = widget.clinica;
-
     return Scaffold(
+      backgroundColor: const Color(0xFFF4F9FF),
       body: Stack(
-        children: [
-          // Fondo degradado discreto y formas suaves.
-          const Positioned.fill(child: _FondoDecorativo()),
-
+        children: <Widget>[
+          const Positioned.fill(child: FondoCitas()),
           SafeArea(
-            child: Center(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 32,
-                ),
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 420),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const SizedBox(height: 12),
-
-                    // Identidad visual de la clínica (fade + escala).
-                    //
-                    // No se usa un logotipo fijo: el backend todavía no expone
-                    // una imagen por clínica. Se muestra un icono neutro.
-                    FadeTransition(
-                      opacity: _logoEntrance,
-                      child: ScaleTransition(
-                        scale: _logoScale,
-                        child: Center(
-                          child: Container(
-                            key: const Key('inicio-identidad-clinica'),
-                            width: 96,
-                            height: 96,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              gradient: const LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [Color(0xFFD6ECFA), Color(0xFFB7E3F9)],
-                              ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: _azulPrincipal.withValues(alpha: 0.16),
-                                  blurRadius: 18,
-                                  offset: const Offset(0, 6),
-                                ),
-                              ],
-                            ),
-                            child: Icon(
-                              Icons.local_hospital_outlined,
-                              size: 46,
-                              color: _azulProfundo.withValues(alpha: 0.9),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-
-                    const SizedBox(height: 18),
-
-                    // Título y subtítulo con fade.
-                    FadeTransition(
-                      opacity: _titleEntrance,
-                      child: Column(
-                        children: [
-                          Text(
-                            clinica == null
-                                ? 'Bienvenido'
-                                : 'Bienvenido a ${clinica.etiqueta}',
-                            key: const Key('inicio-bienvenida'),
-                            textAlign: TextAlign.center,
-                            style: Theme.of(context).textTheme.headlineSmall
-                                ?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                  color: _azulProfundo,
-                                ),
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            'Portal del paciente',
-                            textAlign: TextAlign.center,
-                            style: Theme.of(context).textTheme.titleMedium
-                                ?.copyWith(color: const Color(0xFF547799)),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    const SizedBox(height: 28),
-
-                    // Tarjeta principal con fade + slide desde abajo.
-                    FadeTransition(
-                      opacity: _cardEntrance,
-                      child: SlideTransition(
-                        position: Tween<Offset>(
-                          begin: const Offset(0, 0.08),
-                          end: Offset.zero,
-                        ).animate(_cardEntrance),
-                        child: _TarjetaBienvenida(
-                          azulProfundo: _azulProfundo,
-                          azulPrincipal: _azulPrincipal,
-                        ),
-                      ),
-                    ),
-
-                    const SizedBox(height: 14),
-                    Text(
-                      'Gracias por utilizar nuestros servicios.',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodySmall
-                          ?.copyWith(color: const Color(0xFF7893A9)),
-                    ),
-                  ],
-                ),
-                ),
+            child: RefreshIndicator(
+              color: CitasColores.azulProfundo,
+              onRefresh: () => _cargar(silencioso: true),
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(20, 18, 20, 26),
+                children: <Widget>[
+                  _encabezado(),
+                  const SizedBox(height: 18),
+                  _tarjetaProximaCita(),
+                  const SizedBox(height: 22),
+                  _accionesRapidas(),
+                  const SizedBox(height: 22),
+                  _consejos(),
+                  const SizedBox(height: 20),
+                  _pie(),
+                ],
               ),
             ),
           ),
@@ -191,182 +257,748 @@ class _InicioPageState extends State<InicioPage> with TickerProviderStateMixin {
       ),
     );
   }
-}
 
-/// Tarjeta principal de bienvenida / estado de construcción.
-class _TarjetaBienvenida extends StatelessWidget {
-  const _TarjetaBienvenida({
-    required this.azulProfundo,
-    required this.azulPrincipal,
-  });
+  Widget _encabezado() {
+    final ClinicaSesion? clinica = widget.clinica;
 
-  final Color azulProfundo;
-  final Color azulPrincipal;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: <Widget>[
+        _avatar(),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const Text(
+                'Portal del paciente',
+                style: TextStyle(
+                  fontSize: 11.5,
+                  letterSpacing: 0.7,
+                  fontWeight: FontWeight.w700,
+                  color: CitasColores.grisSuave,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                _saludo,
+                key: const Key('inicio-bienvenida'),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 21,
+                  height: 1.2,
+                  fontWeight: FontWeight.bold,
+                  color: CitasColores.azulProfundo,
+                ),
+              ),
+              if (clinica != null) ...<Widget>[
+                const SizedBox(height: 4),
+                Text(
+                  clinica.etiqueta,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    color: CitasColores.grisTexto,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        IconButton(
+          key: const Key('inicio-actualizar'),
+          tooltip: 'Actualizar',
+          onPressed: _cargando ? null : () => _cargar(),
+          icon: const Icon(Icons.refresh, color: CitasColores.azulPrincipal),
+        ),
+      ],
+    );
+  }
 
-  @override
-  Widget build(BuildContext context) {
+  Widget _avatar() {
+    final String iniciales = _iniciales;
+
     return Container(
+      width: 54,
+      height: 54,
+      alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: [
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: <Color>[CitasColores.azulProfundo, CitasColores.azulPrincipal],
+        ),
+        shape: BoxShape.circle,
+        boxShadow: <BoxShadow>[
           BoxShadow(
-            color: azulPrincipal.withValues(alpha: 0.12),
+            color: CitasColores.azulPrincipal.withValues(alpha: 0.28),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: iniciales.isEmpty
+          ? const Icon(
+              Icons.remove_red_eye_outlined,
+              color: Colors.white,
+              size: 26,
+            )
+          : Text(
+              iniciales,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+    );
+  }
+
+  /// Tarjeta principal del panel: estado de carga, error, sin citas o próxima
+  /// cita real.
+  Widget _tarjetaProximaCita() {
+    if (_cargando) {
+      return TarjetaCitas(
+        key: const Key('inicio-proxima-cita'),
+        child: Row(
+          children: <Widget>[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: const BoxDecoration(
+                color: CitasColores.fondoSuave,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.event_note_outlined,
+                color: CitasColores.azulPrincipal,
+                size: 22,
+              ),
+            ),
+            const SizedBox(width: 14),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    'Revisando tu agenda',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: CitasColores.azulProfundo,
+                    ),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    'Estamos consultando tus citas programadas.',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: CitasColores.grisTexto,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final String? error = _error;
+    if (error != null) {
+      return TarjetaCitas(
+        key: const Key('inicio-proxima-cita'),
+        child: MensajeEstado(
+          icono: Icons.cloud_off_outlined,
+          titulo: 'No pudimos cargar tu agenda',
+          mensaje: error,
+          accion: FilledButton.tonalIcon(
+            key: const Key('inicio-reintentar'),
+            onPressed: () => _cargar(),
+            icon: const Icon(Icons.refresh, size: 18),
+            label: const Text('Reintentar'),
+          ),
+        ),
+      );
+    }
+
+    final Cita? proxima = _proximaCita;
+    if (proxima == null) {
+      return TarjetaCitas(
+        key: const Key('inicio-proxima-cita'),
+        child: MensajeEstado(
+          icono: Icons.event_available_outlined,
+          titulo: 'Aún no tienes citas programadas',
+          mensaje:
+              'Agenda una consulta con un oftalmólogo y tu próxima cita '
+              'aparecerá aquí.',
+          accion: FilledButton.icon(
+            key: const Key('inicio-agendar-cita'),
+            onPressed: _abrirAgendarCita,
+            icon: const Icon(Icons.add_circle_outline, size: 18),
+            label: const Text('Agendar cita'),
+          ),
+        ),
+      );
+    }
+
+    return _tarjetaHero(proxima);
+  }
+
+  /// Tarjeta destacada con la próxima cita real del paciente.
+  Widget _tarjetaHero(Cita proxima) {
+    final OftalmologoAgenda? medico = _oftalmologos[proxima.oftalmologoId];
+    final String nombreMedico = medico == null || medico.nombreCompleto.isEmpty
+        ? 'Oftalmólogo asignado'
+        : 'Dr(a). ${medico.nombreCompleto}';
+
+    return Container(
+      key: const Key('inicio-proxima-cita'),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: <Color>[CitasColores.azulProfundo, CitasColores.azulPrincipal],
+        ),
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: CitasColores.azulPrincipal.withValues(alpha: 0.32),
             blurRadius: 24,
             offset: const Offset(0, 10),
           ),
         ],
       ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 34),
-        child: Column(
-          children: [
-            // Icono de visión dentro de un círculo suave.
-            Container(
-              width: 84,
-              height: 84,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Color(0xFFD6ECFA), Color(0xFFB7E3F9)],
-                ),
-              ),
-              child: Icon(
-                Icons.visibility_outlined,
-                size: 44,
-                color: azulProfundo.withValues(alpha: 0.85),
-              ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(24),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(24),
+          onTap: _abrirMisCitas,
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                _heroCabecera(proxima),
+                const SizedBox(height: 16),
+                _heroDatos(proxima: proxima, nombreMedico: nombreMedico),
+                const SizedBox(height: 18),
+                _heroAcciones(),
+              ],
             ),
-
-            const SizedBox(height: 22),
-
-            Text(
-              'Sistema móvil\nen construcción',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.bold,
-                color: azulProfundo,
-                height: 1.25,
-              ),
-            ),
-
-            const SizedBox(height: 14),
-
-            Text(
-              'Estamos preparando nuevas funcionalidades '
-              'para brindarte una mejor experiencia.',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyMedium
-                  ?.copyWith(color: const Color(0xFF5C6F80), height: 1.45),
-            ),
-            const SizedBox(height: 22),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                key: const Key('inicio-consultar-informacion-clinica'),
-                onPressed: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const InformacionClinicaPage(),
-                    ),
-                  );
-                },
-                icon: const Icon(Icons.medical_information_outlined),
-                label: const Text('Consultar información clínica'),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );
   }
-}
 
-/// Fondo con degradado suave y formas abstractas discretas.
-class _FondoDecorativo extends StatelessWidget {
-  const _FondoDecorativo();
+  /// Cabecera del héroe: etiqueta de sección + estado real de la cita.
+  Widget _heroCabecera(Cita proxima) {
+    final Color colorEstado = colorEstadoCita(proxima.estado);
 
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        const Positioned.fill(
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Color(0xFFF4F9FF),
-                  Color(0xFFE3F1FC),
-                  Color(0xFFD0EAF8),
-                ],
-              ),
+    return Row(
+      children: <Widget>[
+        Container(
+          padding: const EdgeInsets.all(7),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.18),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(
+            Icons.visibility_outlined,
+            color: Colors.white,
+            size: 16,
+          ),
+        ),
+        const SizedBox(width: 10),
+        const Expanded(
+          child: Text(
+            'TU PRÓXIMA CITA',
+            style: TextStyle(
+              fontSize: 11.5,
+              letterSpacing: 1.1,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFFD6E9FA),
             ),
           ),
         ),
-
-        // Forma grande azul en la parte superior derecha.
-        Positioned(
-          top: -70,
-          right: -80,
-          child: _FormaCircular(
-            size: 280,
-            color: const Color(0xFF1976D2).withValues(alpha: 0.10),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(30),
           ),
-        ),
-
-        // Forma celeste abajo izquierda.
-        Positioned(
-          bottom: -60,
-          left: -90,
-          child: _FormaCircular(
-            size: 260,
-            color: const Color(0xFF4FC3F7).withValues(alpha: 0.10),
-          ),
-        ),
-
-        // Anillo tipo lente (guiño a la visión) arriba izquierda.
-        Positioned(
-          top: 60,
-          left: -60,
-          child: Container(
-            width: 180,
-            height: 180,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: const Color(0xFF1976D2).withValues(alpha: 0.06),
-                width: 20,
-              ),
+          child: Text(
+            etiquetaEstadoCita(proxima.estado),
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: colorEstado,
             ),
           ),
         ),
       ],
     );
   }
+
+  /// Fecha, horario, oftalmólogo y motivo reales de la cita.
+  Widget _heroDatos({required Cita proxima, required String nombreMedico}) {
+    final String? motivo = proxima.motivo;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Text(
+          fechaLargaEspanol(proxima.fecha),
+          style: const TextStyle(
+            fontSize: 19,
+            height: 1.25,
+            fontWeight: FontWeight.bold,
+            color: Colors.white,
+          ),
+        ),
+        const SizedBox(height: 8),
+        _heroLinea(icono: Icons.schedule, texto: proxima.franja, resaltado: true),
+        const SizedBox(height: 8),
+        _heroLinea(
+          icono: Icons.medical_services_outlined,
+          texto: nombreMedico,
+        ),
+        if (motivo != null) ...<Widget>[
+          const SizedBox(height: 8),
+          _heroLinea(icono: Icons.notes_outlined, texto: motivo, tenue: true),
+        ],
+      ],
+    );
+  }
+
+  /// Línea de dato dentro del héroe (icono + texto de una sola línea).
+  Widget _heroLinea({
+    required IconData icono,
+    required String texto,
+    bool resaltado = false,
+    bool tenue = false,
+  }) {
+    final Color colorTexto = tenue
+        ? const Color(0xFFE8F4FD)
+        : Colors.white;
+
+    return Row(
+      children: <Widget>[
+        Icon(icono, size: 16, color: const Color(0xFFD6E9FA)),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            texto,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: resaltado ? 15 : (tenue ? 13 : 14),
+              fontWeight: resaltado ? FontWeight.w600 : FontWeight.w400,
+              color: colorTexto,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Accesos del héroe al listado de citas y al agendamiento.
+  Widget _heroAcciones() {
+    return Row(
+      children: <Widget>[
+        Expanded(
+          child: FilledButton.icon(
+            key: const Key('inicio-ver-mis-citas'),
+            onPressed: _abrirMisCitas,
+            style: FilledButton.styleFrom(
+              backgroundColor: Colors.white,
+              foregroundColor: CitasColores.azulProfundo,
+            ),
+            icon: const Icon(Icons.list_alt, size: 18),
+            label: const Text('Ver mis citas'),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: OutlinedButton.icon(
+            key: const Key('inicio-agendar-otra'),
+            onPressed: _abrirAgendarCita,
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white,
+              side: BorderSide(color: Colors.white.withValues(alpha: 0.65)),
+            ),
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('Agendar'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // -------------------------------------------------------------------
+  // Navegación (delegada al contenedor de pestañas)
+  // -------------------------------------------------------------------
+
+  void _abrirAgendarCita() {
+    final VoidCallback? callback = widget.onAgendarCita;
+    if (callback != null) {
+      callback();
+      return;
+    }
+    _aviso('Abre la pestaña Citas para agendar.');
+  }
+
+  void _abrirMisCitas() {
+    final VoidCallback? callback = widget.onVerMisCitas;
+    if (callback != null) {
+      callback();
+      return;
+    }
+    _aviso('Abre la pestaña Citas para ver tus citas.');
+  }
+
+  void _abrirPagos() {
+    final VoidCallback? callback = widget.onVerPagos;
+    if (callback != null) {
+      callback();
+      return;
+    }
+    _aviso('Abre la pestaña Pagos para consultar tus pagos.');
+  }
+
+  void _abrirInformacionClinica() {
+    final VoidCallback? callback = widget.onVerInformacionClinica;
+    if (callback != null) {
+      callback();
+      return;
+    }
+
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const InformacionClinicaPage(),
+      ),
+    );
+  }
+
+  /// Aviso breve cuando Inicio se usa sin el contenedor de pestañas.
+  void _aviso(String mensaje) {
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(content: Text(mensaje), behavior: SnackBarBehavior.floating),
+    );
+  }
+
+  // -------------------------------------------------------------------
+  // Utilidades de texto
+  // -------------------------------------------------------------------
+
+  /// Primera palabra de un nombre (`Ana María Quispe` -> `Ana`).
+  static String _primerNombre(String valor) {
+    final List<String> partes = valor
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((String parte) => parte.isNotEmpty)
+        .toList();
+    return partes.isEmpty ? '' : partes.first;
+  }
+
+  /// Primera letra de un texto (o vacío).
+  static String _letra(String valor) {
+    final String texto = valor.trim();
+    return texto.isEmpty ? '' : texto.substring(0, 1);
+  }
+
+  /// Capitaliza la primera letra respetando el resto del texto.
+  static String _capitalizar(String valor) {
+    final String texto = valor.trim();
+    if (texto.isEmpty) return '';
+    return '${texto.substring(0, 1).toUpperCase()}'
+        '${texto.substring(1).toLowerCase()}';
+  }
+
+  // -------------------------------------------------------------------
+  // Secciones del panel
+  // -------------------------------------------------------------------
+
+  Widget _accionesRapidas() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        _tituloSeccion('Acciones rápidas'),
+        const SizedBox(height: 12),
+        Row(
+          children: <Widget>[
+            Expanded(
+              child: _AccionRapida(
+                clave: 'inicio-accion-agendar',
+                icono: Icons.add_circle_outline,
+                titulo: 'Agendar cita',
+                subtitulo: 'Elige día y hora',
+                color: CitasColores.azulPrincipal,
+                onTap: _abrirAgendarCita,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _AccionRapida(
+                clave: 'inicio-accion-mis-citas',
+                icono: Icons.event_note_outlined,
+                titulo: 'Mis citas',
+                subtitulo: 'Revisa o cancela',
+                color: CitasColores.celeste,
+                onTap: _abrirMisCitas,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: <Widget>[
+            Expanded(
+              child: _AccionRapida(
+                clave: 'inicio-accion-pagos',
+                icono: Icons.payments_outlined,
+                titulo: 'Pagos',
+                subtitulo: 'Consultas y estados',
+                color: CitasColores.verde,
+                onTap: _abrirPagos,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _AccionRapida(
+                clave: 'inicio-accion-informacion',
+                icono: Icons.medical_information_outlined,
+                titulo: 'Información clínica',
+                subtitulo: 'Servicios y horarios',
+                color: CitasColores.ambar,
+                onTap: _abrirInformacionClinica,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _consejos() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        _tituloSeccion('Cuidados para tu salud visual'),
+        const SizedBox(height: 12),
+        TarjetaCitas(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          child: Column(
+            children: <Widget>[
+              for (int i = 0; i < _consejosVisuales.length; i++) ...<Widget>[
+                if (i > 0) const Divider(height: 1, color: CitasColores.borde),
+                _ConsejoTile(consejo: _consejosVisuales[i]),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _pie() {
+    return const Center(
+      child: Text(
+        'Gracias por confiar en nosotros.',
+        textAlign: TextAlign.center,
+        style: TextStyle(fontSize: 12.5, color: CitasColores.grisSuave),
+      ),
+    );
+  }
+
+  Widget _tituloSeccion(String texto) {
+    return Text(
+      texto,
+      style: const TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.bold,
+        color: CitasColores.azulProfundo,
+      ),
+    );
+  }
 }
 
-/// Forma circular con gradiente radial (luz suave).
-class _FormaCircular extends StatelessWidget {
-  final double size;
-  final Color color;
+/// Recomendaciones generales de cuidado visual (información educativa, no un
+/// diagnóstico ni un tratamiento indicado al paciente).
+const List<_Consejo> _consejosVisuales = <_Consejo>[
+  _Consejo(
+    icono: Icons.timer_outlined,
+    titulo: 'Regla 20-20-20',
+    detalle:
+        'Cada 20 minutos, descansa la vista mirando algo lejano durante '
+        '20 segundos.',
+  ),
+  _Consejo(
+    icono: Icons.wb_sunny_outlined,
+    titulo: 'Protección solar',
+    detalle: 'Usa lentes con filtro UV cuando estés al aire libre.',
+  ),
+  _Consejo(
+    icono: Icons.visibility_outlined,
+    titulo: 'Controles periódicos',
+    detalle: 'Una revisión anual ayuda a detectar cambios a tiempo.',
+  ),
+];
 
-  const _FormaCircular({required this.size, required this.color});
+/// Acceso rápido del panel de Inicio.
+class _AccionRapida extends StatelessWidget {
+  const _AccionRapida({
+    required this.clave,
+    required this.icono,
+    required this.titulo,
+    required this.subtitulo,
+    required this.color,
+    required this.onTap,
+  });
+
+  final String clave;
+  final IconData icono;
+  final String titulo;
+  final String subtitulo;
+  final Color color;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: RadialGradient(
-          center: const Alignment(0.3, -0.3),
-          colors: [color, color.withValues(alpha: 0)],
+    final BorderRadius radio = BorderRadius.circular(20);
+
+    return SizedBox(
+      height: 118,
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: radio,
+          boxShadow: <BoxShadow>[
+            BoxShadow(
+              color: CitasColores.azulPrincipal.withValues(alpha: 0.10),
+              blurRadius: 18,
+              offset: const Offset(0, 8),
+            ),
+          ],
         ),
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: radio,
+          child: InkWell(
+            key: Key(clave),
+            borderRadius: radio,
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Container(
+                    padding: const EdgeInsets.all(9),
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(icono, size: 20, color: color),
+                  ),
+                  const Spacer(),
+                  Text(
+                    titulo,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: CitasColores.azulProfundo,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitulo,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      color: CitasColores.grisTexto,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Consejo de cuidado visual mostrado en Inicio.
+class _Consejo {
+  const _Consejo({
+    required this.icono,
+    required this.titulo,
+    required this.detalle,
+  });
+
+  final IconData icono;
+  final String titulo;
+  final String detalle;
+}
+
+/// Fila de un consejo de cuidado visual.
+class _ConsejoTile extends StatelessWidget {
+  const _ConsejoTile({required this.consejo});
+
+  final _Consejo consejo;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: CitasColores.fondoSuave,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(
+              consejo.icono,
+              size: 18,
+              color: CitasColores.azulPrincipal,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  consejo.titulo,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: CitasColores.azulProfundo,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  consejo.detalle,
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    height: 1.4,
+                    color: CitasColores.grisTexto,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
