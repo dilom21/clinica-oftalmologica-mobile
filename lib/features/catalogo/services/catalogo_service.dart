@@ -59,6 +59,12 @@ class CatalogoService {
         'No se pudo conectar. Revisa tu conexión e inténtalo nuevamente.',
       );
     }
+    // Never expose a response issued under a previous tenant/session.
+    if (await _leerToken() != token) {
+      throw const CatalogoException(
+        'La sesión cambió. Vuelve a consultar el catálogo.',
+      );
+    }
     if (response.statusCode != 200) {
       final mensaje = switch (response.statusCode) {
         401 => 'Tu sesión expiró. Inicia sesión nuevamente.',

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -6,6 +7,34 @@ import 'package:http/testing.dart';
 import 'package:clinica_oftalmologica_mobile/features/catalogo/services/catalogo_service.dart';
 
 void main() {
+  for (final detalle in [false, true]) {
+    test(
+      'descarta respuesta tardía tras cambiar sesión: detalle=$detalle',
+      () async {
+        String? token = 'ALPHA';
+        final started = Completer<void>();
+        final response = Completer<http.Response>();
+        final service = CatalogoService(
+          leerToken: () async => token,
+          client: MockClient((_) {
+            started.complete();
+            return response.future;
+          }),
+        );
+        final pending = detalle ? service.detalle(1) : service.listar();
+        final assertion = expectLater(
+          pending,
+          throwsA(isA<CatalogoException>()),
+        );
+        await started.future;
+        token = 'BETA';
+        response.complete(
+          http.Response(detalle ? '{"id":1,"nombre":"ALPHA"}' : '[]', 200),
+        );
+        await assertion;
+      },
+    );
+  }
   Map<String, dynamic> servicio(String nombre) => {
     'id': 1,
     'nombre': nombre,
