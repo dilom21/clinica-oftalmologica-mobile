@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../core/session/sesion_clinica.dart';
 import '../../../core/storage/token_storage.dart';
 import 'inicio_page.dart';
+import '../../catalogo/pages/catalogo_page.dart';
 import '../../authentication_security/pages/login/login_page.dart';
 import '../../citas/pages/citas_page.dart';
 import '../../informacion_clinica/pages/informacion_clinica_page.dart';
@@ -181,6 +182,14 @@ class _MainNavigationPageState extends State<MainNavigationPage>
               onVerMisCitas: () => _abrirCitas(agendar: false),
               onVerPagos: () => _seleccionar(2),
               onVerInformacionClinica: _abrirInformacionClinica,
+              onVerCatalogo: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => CatalogoPage(
+                    clinica: _sesionClinica.clinica,
+                    onSesionInvalida: _sesionInvalida,
+                  ),
+                ),
+              ),
             ),
             CitasPage(
               key: _citasKey,
