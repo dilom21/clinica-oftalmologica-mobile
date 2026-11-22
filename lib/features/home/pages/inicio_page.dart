@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../../../core/session/sesion_clinica.dart';
 import '../../catalogo/pages/catalogo_page.dart';
+import '../../chatbot/pages/chatbot_page.dart';
+import '../../chatbot/widgets/tarjeta_asistente_inicio.dart';
 import '../../citas/models/agenda_models.dart';
 import '../../citas/models/cita_models.dart';
 import '../../citas/services/agenda_service.dart';
@@ -42,6 +44,8 @@ class InicioPage extends StatefulWidget {
     this.onVerPagos,
     this.onVerInformacionClinica,
     this.onVerCatalogo,
+    this.onAbrirChatbot,
+    this.onAbrirChatVoz,
   });
 
   /// Clínica de la sesión activa.
@@ -68,6 +72,12 @@ class InicioPage extends StatefulWidget {
   /// Abre la información clínica de la clínica.
   final VoidCallback? onVerInformacionClinica;
   final VoidCallback? onVerCatalogo;
+
+  /// Abre el asistente virtual en modalidad escrita.
+  final VoidCallback? onAbrirChatbot;
+
+  /// Abre el asistente virtual en modalidad de voz.
+  final VoidCallback? onAbrirChatVoz;
 
   @override
   State<InicioPage> createState() => InicioPageState();
@@ -246,6 +256,11 @@ class InicioPageState extends State<InicioPage> {
                   _encabezado(),
                   const SizedBox(height: 18),
                   _tarjetaProximaCita(),
+                  const SizedBox(height: 18),
+                  TarjetaAsistenteInicio(
+                    onConversar: _abrirChatbot,
+                    onHablar: _abrirChatVoz,
+                  ),
                   const SizedBox(height: 22),
                   _accionesRapidas(),
                   const SizedBox(height: 22),
@@ -686,6 +701,36 @@ class InicioPageState extends State<InicioPage> {
 
     Navigator.of(context).push(
       MaterialPageRoute<void>(builder: (_) => const InformacionClinicaPage()),
+    );
+  }
+
+  /// Abre el chat escrito. No crea conversación ni usa el micrófono todavía.
+  void _abrirChatbot() {
+    final VoidCallback? callback = widget.onAbrirChatbot;
+    if (callback != null) {
+      callback();
+      return;
+    }
+
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ChatbotPage(clinica: widget.clinica),
+      ),
+    );
+  }
+
+  /// Abre la experiencia de voz con consentimiento explícito en esa pantalla.
+  void _abrirChatVoz() {
+    final VoidCallback? callback = widget.onAbrirChatVoz;
+    if (callback != null) {
+      callback();
+      return;
+    }
+
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ChatbotPage(clinica: widget.clinica, abrirEnVoz: true),
+      ),
     );
   }
 

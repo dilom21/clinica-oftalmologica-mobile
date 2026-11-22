@@ -4,6 +4,7 @@ import '../../../core/session/sesion_clinica.dart';
 import '../../perfil_paciente/services/paciente_service.dart';
 import '../models/agenda_models.dart';
 import '../models/cita_models.dart';
+import '../models/preseleccion_cita.dart';
 import '../services/agenda_service.dart';
 import '../widgets/citas_ui.dart';
 
@@ -29,6 +30,7 @@ class AgendarCitaView extends StatefulWidget {
     this.onCitaCreada,
     this.onSesionInvalida,
     this.onVerMisCitas,
+    this.preseleccion,
   });
 
   /// Servicio de agenda; inyectable en pruebas.
@@ -48,6 +50,11 @@ class AgendarCitaView extends StatefulWidget {
 
   /// Acceso directo al listado de citas tras reservar.
   final VoidCallback? onVerMisCitas;
+
+  /// Propuesta inicial de CU41 (profesional, fecha y hora). Solo precarga el
+  /// formulario: la disponibilidad se vuelve a consultar y NUNCA se registra
+  /// una cita sin confirmación explícita del paciente.
+  final PreseleccionCita? preseleccion;
 
   @override
   State<AgendarCitaView> createState() => AgendarCitaViewState();
@@ -81,6 +88,13 @@ class AgendarCitaViewState extends State<AgendarCitaView> {
   bool _creando = false;
   Cita? _citaCreada;
 
+  // Preselección proveniente de CU41 (solo una vez).
+  int? _idPreseleccionado;
+  DateTime? _fechaPreseleccionada;
+  String? _horaPreseleccionada;
+  bool _preseleccionAplicada = false;
+  String? _avisoPreseleccion;
+
   static DateTime _hoy() {
     final DateTime ahora = DateTime.now();
     return DateTime(ahora.year, ahora.month, ahora.day);
@@ -89,6 +103,17 @@ class AgendarCitaViewState extends State<AgendarCitaView> {
   @override
   void initState() {
     super.initState();
+    final PreseleccionCita? propuesta = widget.preseleccion;
+    if (propuesta != null) {
+      _idPreseleccionado = propuesta.oftalmologoId;
+      _fechaPreseleccionada = DateTime(
+        propuesta.fecha.year,
+        propuesta.fecha.month,
+        propuesta.fecha.day,
+      );
+      _horaPreseleccionada = propuesta.horaInicio;
+      _fecha = _fechaPreseleccionada!;
+    }
     _cargarOftalmologos();
   }
 
@@ -122,17 +147,58 @@ class AgendarCitaViewState extends State<AgendarCitaView> {
       final List<OftalmologoAgenda> lista = await _agenda.listarOftalmologos();
 
       if (!mounted) return;
+
+      bool consultarPropuesta = false;
+
       setState(() {
         _oftalmologos = lista;
         _cargandoOftalmologos = false;
 
-        final OftalmologoAgenda? actual = _oftalmologo;
-        final bool sigueDisponible =
-            actual != null && lista.any((o) => o.id == actual.id);
-        _oftalmologo = sigueDisponible
-            ? actual
-            : (lista.isEmpty ? null : lista.first);
+        final int? idPropuesto = _idPreseleccionado;
+        if (!_preseleccionAplicada && idPropuesto != null) {
+          _preseleccionAplicada = true;
+          OftalmologoAgenda? propuesto;
+          for (final OftalmologoAgenda oftalmologo in lista) {
+            if (oftalmologo.id == idPropuesto) {
+              propuesto = oftalmologo;
+              break;
+            }
+          }
+
+          if (propuesto == null) {
+            _avisoPreseleccion =
+                'El profesional propuesto ya no está disponible. Elige otro '
+                'oftalmólogo, fecha y horario.';
+            _oftalmologo = lista.isEmpty ? null : lista.first;
+            _horaPreseleccionada = null;
+          } else {
+            _oftalmologo = propuesto;
+            final DateTime? fechaPropuesta = _fechaPreseleccionada;
+            if (fechaPropuesta != null && !fechaPropuesta.isBefore(_hoy())) {
+              _fecha = fechaPropuesta;
+              consultarPropuesta = true;
+            } else {
+              _avisoPreseleccion =
+                  'La fecha propuesta ya pasó. Selecciona una fecha y '
+                  'horario disponibles.';
+              _horaPreseleccionada = null;
+              _fecha = _hoy();
+            }
+          }
+        } else {
+          final OftalmologoAgenda? actual = _oftalmologo;
+          final bool sigueDisponible =
+              actual != null && lista.any((o) => o.id == actual.id);
+          _oftalmologo = sigueDisponible
+              ? actual
+              : (lista.isEmpty ? null : lista.first);
+        }
       });
+
+      if (consultarPropuesta) {
+        // La propuesta NO se acepta a ciegas: se consulta CU09 de nuevo.
+        await _consultarDisponibilidad();
+      }
     } on AgendaException catch (error) {
       if (!mounted) return;
 
@@ -168,9 +234,7 @@ class AgendarCitaViewState extends State<AgendarCitaView> {
     await showDialog<void>(
       context: context,
       builder: (BuildContext dialogContext) => AlertDialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text('No se pudo agendar la cita'),
         content: Text(mensaje),
         actions: <Widget>[
@@ -195,6 +259,7 @@ class AgendarCitaViewState extends State<AgendarCitaView> {
       _disponibilidad = null;
       _ranuras = const <RanuraDisponible>[];
       _errorDisponibilidad = null;
+      _horaPreseleccionada = null;
     });
   }
 
@@ -230,6 +295,7 @@ class AgendarCitaViewState extends State<AgendarCitaView> {
       _disponibilidad = null;
       _ranuras = const <RanuraDisponible>[];
       _errorDisponibilidad = null;
+      _horaPreseleccionada = null;
     });
   }
 
@@ -244,19 +310,39 @@ class AgendarCitaViewState extends State<AgendarCitaView> {
       _disponibilidad = null;
       _ranuras = const <RanuraDisponible>[];
       _ranura = null;
+      if (_horaPreseleccionada != null) _avisoPreseleccion = null;
     });
 
     try {
       final DisponibilidadRespuesta resultado = await _agenda
-          .obtenerDisponibilidad(
-            oftalmologoId: oftalmologo.id,
-            fecha: _fecha,
-          );
+          .obtenerDisponibilidad(oftalmologoId: oftalmologo.id, fecha: _fecha);
 
       if (!mounted) return;
+      final List<RanuraDisponible> ranuras = generarRanurasDisponibles(
+        resultado.intervalosDisponibles,
+      );
+
+      RanuraDisponible? preseleccionada;
+      if (_horaPreseleccionada != null) {
+        final int minutosBuscados = minutosDe(_horaPreseleccionada!);
+        for (final RanuraDisponible ranura in ranuras) {
+          if (minutosDe(ranura.horaInicio) == minutosBuscados) {
+            preseleccionada = ranura;
+            break;
+          }
+        }
+        if (preseleccionada == null) {
+          _avisoPreseleccion =
+              'El horario propuesto ya no está disponible. Elige otro '
+              'horario de la lista actualizada.';
+        }
+        _horaPreseleccionada = null;
+      }
+
       setState(() {
         _disponibilidad = resultado;
-        _ranuras = generarRanurasDisponibles(resultado.intervalosDisponibles);
+        _ranuras = ranuras;
+        _ranura = preseleccionada;
         _consultando = false;
       });
     } on AgendaException catch (error) {
@@ -545,9 +631,7 @@ class AgendarCitaViewState extends State<AgendarCitaView> {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(16),
               border: Border.all(
-                color: activo
-                    ? CitasColores.azulPrincipal
-                    : CitasColores.borde,
+                color: activo ? CitasColores.azulPrincipal : CitasColores.borde,
                 width: activo ? 1.6 : 1,
               ),
             ),
@@ -563,9 +647,7 @@ class AgendarCitaViewState extends State<AgendarCitaView> {
                     style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
-                      color: activo
-                          ? Colors.white
-                          : CitasColores.azulProfundo,
+                      color: activo ? Colors.white : CitasColores.azulProfundo,
                     ),
                   ),
                 ),
@@ -755,6 +837,40 @@ class AgendarCitaViewState extends State<AgendarCitaView> {
             'Elige el horario',
             'Cada consulta dura $duracionCitaMinutos minutos',
           ),
+          if (_avisoPreseleccion != null) ...<Widget>[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(11),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF4E0),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: CitasColores.ambar.withValues(alpha: 0.30),
+                ),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  const Icon(
+                    Icons.info_outline,
+                    size: 18,
+                    color: CitasColores.ambar,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _avisoPreseleccion!,
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        height: 1.4,
+                        color: CitasColores.grisTexto,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 14),
           SizedBox(
             width: double.infinity,
@@ -1155,10 +1271,7 @@ class AgendarCitaViewState extends State<AgendarCitaView> {
                     ),
                   ),
                   SizedBox(width: 12),
-                  Text(
-                    'Registrando cita...',
-                    style: TextStyle(fontSize: 15),
-                  ),
+                  Text('Registrando cita...', style: TextStyle(fontSize: 15)),
                 ],
               )
             : const Text(
@@ -1250,7 +1363,3 @@ class AgendarCitaViewState extends State<AgendarCitaView> {
     );
   }
 }
-
-
-
-

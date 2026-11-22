@@ -4,6 +4,10 @@
          "Failed host lookup". El permiso se declara en `main` para que llegue
          a release (debug/profile ya lo traían para hot reload). -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- CU41: reconocimiento de voz local. El micrófono solo se usa cuando el
+         paciente lo activa de forma explícita desde el asistente. No se
+         declaran permisos de ubicación, contactos ni almacenamiento amplio. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
 
     <application
         android:label="clinica_oftalmologica_mobile"
@@ -46,6 +50,14 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Android 11+: visibilidad de los servicios del sistema usados por
+             CU41 (reconocimiento de voz y síntesis). -->
+        <intent>
+            <action android:name="android.speech.RecognitionService"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE"/>
         </intent>
     </queries>
 </manifest>

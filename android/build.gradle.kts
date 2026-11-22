@@ -34,9 +34,14 @@ subprojects {
 // stripe_android hereda ese JDK en Kotlin y el build se corta por la
 // diferencia con compileDebugJavaWithJavac (17).
 subprojects {
-    tasks.withType<KotlinCompile>().configureEach {
-        compilerOptions {
-            jvmTarget.set(JvmTarget.JVM_17)
+    // flutter_tts declara Java y Kotlin en 11; el resto del proyecto usa 17.
+    // Se excluye ese plugin del override global para no crear una mezcla
+    // inválida de targets (Java 11 / Kotlin 17).
+    if (name != "flutter_tts") {
+        tasks.withType<KotlinCompile>().configureEach {
+            compilerOptions {
+                jvmTarget.set(JvmTarget.JVM_17)
+            }
         }
     }
 }

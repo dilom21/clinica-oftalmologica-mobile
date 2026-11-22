@@ -4,6 +4,8 @@ import '../../../core/session/sesion_clinica.dart';
 import '../../../core/storage/token_storage.dart';
 import 'inicio_page.dart';
 import '../../catalogo/pages/catalogo_page.dart';
+import '../../chatbot/controllers/chatbot_controller.dart';
+import '../../chatbot/pages/chatbot_page.dart';
 import '../../authentication_security/pages/login/login_page.dart';
 import '../../citas/pages/citas_page.dart';
 import '../../informacion_clinica/pages/informacion_clinica_page.dart';
@@ -69,6 +71,14 @@ class _MainNavigationPageState extends State<MainNavigationPage>
   late final SesionClinica _sesionClinica =
       widget.sesionClinica ?? SesionClinica();
 
+  /// Única conversación temporal del área autenticada (texto y voz).
+  ///
+  /// Vive únicamente en memoria y se invalida al cerrar sesión o ante un JWT
+  /// rechazado. No se persiste en disco.
+  late final ChatbotController _chatbot = ChatbotController(
+    alSesionInvalida: _sesionInvalida,
+  );
+
   @override
   void initState() {
     super.initState();
@@ -84,6 +94,7 @@ class _MainNavigationPageState extends State<MainNavigationPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _chatbot.dispose();
     if (widget.sesionClinica == null) {
       _sesionClinica.dispose();
     }
@@ -148,6 +159,21 @@ class _MainNavigationPageState extends State<MainNavigationPage>
     );
   }
 
+  /// Abre el asistente compartiendo el mismo controlador de conversación.
+  void _abrirChatbot({bool voz = false}) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ChatbotPage(
+          controller: _chatbot,
+          clinica: _sesionClinica.clinica,
+          onSesionInvalida: _sesionInvalida,
+          onCitasCambiadas: _alCambiarCitas,
+          abrirEnVoz: voz,
+        ),
+      ),
+    );
+  }
+
   /// Una cita creada, reprogramada o cancelada obliga a refrescar Inicio.
   void _alCambiarCitas() {
     _inicioKey.currentState?.alMostrarPestana();
@@ -155,6 +181,7 @@ class _MainNavigationPageState extends State<MainNavigationPage>
 
   /// 401 en Citas: se borra el JWT, se olvida la clínica y se vuelve al login.
   Future<void> _sesionInvalida() async {
+    _chatbot.cerrarSesion();
     await TokenStorage().deleteToken();
     _sesionClinica.limpiar();
 
@@ -190,6 +217,8 @@ class _MainNavigationPageState extends State<MainNavigationPage>
                   ),
                 ),
               ),
+              onAbrirChatbot: () => _abrirChatbot(),
+              onAbrirChatVoz: () => _abrirChatbot(voz: true),
             ),
             CitasPage(
               key: _citasKey,
@@ -204,7 +233,10 @@ class _MainNavigationPageState extends State<MainNavigationPage>
             ),
             PerfilPage(
               clinica: _sesionClinica.clinica,
-              alCerrarSesion: _sesionClinica.limpiar,
+              alCerrarSesion: () {
+                _chatbot.cerrarSesion();
+                _sesionClinica.limpiar();
+              },
             ),
           ],
         ),
