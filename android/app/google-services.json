@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "505445164402",
+    "project_id": "clinica-oftalmologica-24ff7",
+    "storage_bucket": "clinica-oftalmologica-24ff7.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:505445164402:android:7f11a29cff07a1fa47a9eb",
+        "android_client_info": {
+          "package_name": "com.clinicaoftalmologica.mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBom9r411_0zrfT1RnqGdnkV1rux-vnUgA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

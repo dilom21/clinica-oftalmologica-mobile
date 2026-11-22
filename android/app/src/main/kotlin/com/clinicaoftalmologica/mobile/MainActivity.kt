@@ -1,4 +1,4 @@
-package com.example.clinica_oftalmologica_mobile
+package com.clinicaoftalmologica.mobile
 
 import io.flutter.embedding.android.FlutterFragmentActivity
 

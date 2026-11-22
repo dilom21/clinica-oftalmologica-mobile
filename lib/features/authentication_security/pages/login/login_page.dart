@@ -8,6 +8,7 @@ import '../../widgets/clinica_selector.dart';
 import '../register/register_page.dart';
 import '../../../../core/storage/token_storage.dart';
 import '../../../home/pages/main_navigation_page.dart';
+import '../../../notificaciones/services/push_runtime.dart';
 
 // El registro de nuevas cuentas vive en `RegisterPage` y siempre se hace dentro
 // de la clínica elegida en el selector (registro multitenant del PASO 3).
@@ -341,6 +342,10 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     try {
       final LoginResponse response = await _authService.loginPaciente(request);
 
+      // Si existía otra sesión, intenta revocar su dispositivo mientras su JWT
+      // todavía está disponible. Un fallo de red no bloquea el nuevo login.
+      await PushRuntime.coordinator.beforeSessionReplacement();
+
       // Guardar el JWT de forma segura junto a la clínica autenticada. Esto
       // elimina cualquier token legacy o de otra clínica antes de navegar.
       await TokenStorage().saveTenantSession(
@@ -348,6 +353,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
         empresaCodigo: empresa.codigo,
         empresaNombre: empresa.nombre,
       );
+      await PushRuntime.coordinator.activateAuthenticatedPatient();
 
       if (!mounted) return;
       setState(() {

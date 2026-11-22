@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../notificaciones/services/push_runtime.dart';
+
 import '../../../core/session/sesion_clinica.dart';
 import '../../../core/storage/token_storage.dart';
 import '../models/mi_perfil_paciente.dart';
@@ -139,6 +141,7 @@ class _PerfilPageState extends State<PerfilPage> with TickerProviderStateMixin {
   /// Elimina el token local y navega a LoginPage limpiando toda la pila.
   Future<void> _borrarSesionYSalir() async {
     final storage = TokenStorage();
+    await PushRuntime.coordinator.revokeBeforeLogout();
     await storage.deleteToken();
 
     // La identidad de la clínica anterior deja de existir en memoria: al volver
@@ -189,14 +192,8 @@ class _PerfilPageState extends State<PerfilPage> with TickerProviderStateMixin {
       return;
     }
 
-    // Eliminar el JWT y garantizar que ya no esté disponible.
-    final storage = TokenStorage();
-    await storage.deleteToken();
-    if (await storage.hasToken()) {
-      await storage.deleteToken();
-    }
-
-    if (!mounted) return;
+    // La revocación Push se intenta dentro de `_borrarSesionYSalir`, antes de
+    // eliminar el JWT. Un fallo de red no bloquea indefinidamente el logout.
     await _borrarSesionYSalir();
   }
 

@@ -4,11 +4,20 @@
          "Failed host lookup". El permiso se declara en `main` para que llegue
          a release (debug/profile ya lo traían para hot reload). -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Android 13+: FirebaseMessaging.requestPermission solicita este permiso
+         en tiempo de ejecución. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
     <application
         android:label="clinica_oftalmologica_mobile"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <meta-data
+            android:name="firebase_messaging_installation_id_enabled"
+            android:value="true" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="clinica_push_channel" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
