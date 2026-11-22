@@ -1,7 +1,11 @@
 name: Compilar APK Android debug
 
 on:
+  push:
+    branches:
+      - dev-jerez
   workflow_dispatch:
+
 
 permissions:
   contents: read
