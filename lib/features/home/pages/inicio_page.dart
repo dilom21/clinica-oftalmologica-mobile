@@ -40,6 +40,7 @@ class InicioPage extends StatefulWidget {
     this.onVerMisCitas,
     this.onVerPagos,
     this.onVerInformacionClinica,
+    this.onVerNotificaciones,
   });
 
   /// Clínica de la sesión activa.
@@ -65,6 +66,7 @@ class InicioPage extends StatefulWidget {
 
   /// Abre la información clínica de la clínica.
   final VoidCallback? onVerInformacionClinica;
+  final VoidCallback? onVerNotificaciones;
 
   @override
   State<InicioPage> createState() => InicioPageState();
@@ -308,6 +310,15 @@ class InicioPageState extends State<InicioPage> {
           ),
         ),
         IconButton(
+          key: const Key('inicio-notificaciones'),
+          tooltip: 'Notificaciones',
+          onPressed: widget.onVerNotificaciones,
+          icon: const Icon(
+            Icons.notifications_none,
+            color: CitasColores.azulPrincipal,
+          ),
+        ),
+        IconButton(
           key: const Key('inicio-actualizar'),
           tooltip: 'Actualizar',
           onPressed: _cargando ? null : () => _cargar(),
@@ -328,7 +339,10 @@ class InicioPageState extends State<InicioPage> {
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: <Color>[CitasColores.azulProfundo, CitasColores.azulPrincipal],
+          colors: <Color>[
+            CitasColores.azulProfundo,
+            CitasColores.azulPrincipal,
+          ],
         ),
         shape: BoxShape.circle,
         boxShadow: <BoxShadow>[
@@ -459,7 +473,10 @@ class InicioPageState extends State<InicioPage> {
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: <Color>[CitasColores.azulProfundo, CitasColores.azulPrincipal],
+          colors: <Color>[
+            CitasColores.azulProfundo,
+            CitasColores.azulPrincipal,
+          ],
         ),
         borderRadius: BorderRadius.circular(24),
         boxShadow: <BoxShadow>[
@@ -560,12 +577,13 @@ class InicioPageState extends State<InicioPage> {
           ),
         ),
         const SizedBox(height: 8),
-        _heroLinea(icono: Icons.schedule, texto: proxima.franja, resaltado: true),
-        const SizedBox(height: 8),
         _heroLinea(
-          icono: Icons.medical_services_outlined,
-          texto: nombreMedico,
+          icono: Icons.schedule,
+          texto: proxima.franja,
+          resaltado: true,
         ),
+        const SizedBox(height: 8),
+        _heroLinea(icono: Icons.medical_services_outlined, texto: nombreMedico),
         if (motivo != null) ...<Widget>[
           const SizedBox(height: 8),
           _heroLinea(icono: Icons.notes_outlined, texto: motivo, tenue: true),
@@ -581,9 +599,7 @@ class InicioPageState extends State<InicioPage> {
     bool resaltado = false,
     bool tenue = false,
   }) {
-    final Color colorTexto = tenue
-        ? const Color(0xFFE8F4FD)
-        : Colors.white;
+    final Color colorTexto = tenue ? const Color(0xFFE8F4FD) : Colors.white;
 
     return Row(
       children: <Widget>[
@@ -677,9 +693,7 @@ class InicioPageState extends State<InicioPage> {
     }
 
     Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => const InformacionClinicaPage(),
-      ),
+      MaterialPageRoute<void>(builder: (_) => const InformacionClinicaPage()),
     );
   }
 

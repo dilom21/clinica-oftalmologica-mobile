@@ -10,6 +10,8 @@ import '../../pagos/pages/pagos_page.dart';
 import '../../pagos/services/pagos_service.dart';
 import '../../pagos/services/stripe_payment_service.dart';
 import '../../perfil_paciente/pages/perfil_page.dart';
+import '../../notificaciones/pages/notificaciones_page.dart';
+import '../../notificaciones/services/notificaciones_service.dart';
 
 /// Contenedor principal del área autenticada (pacientes).
 ///
@@ -28,6 +30,7 @@ class MainNavigationPage extends StatefulWidget {
     this.pagosService,
     this.stripeService,
     this.sesionClinica,
+    this.notificacionesService,
   });
 
   /// Servicio de pagos; inyectable en pruebas.
@@ -41,6 +44,7 @@ class MainNavigationPage extends StatefulWidget {
   /// Si no se provee, la página crea una y la carga desde el almacenamiento
   /// seguro, donde el login guardó el código y el nombre reales de la clínica.
   final SesionClinica? sesionClinica;
+  final NotificacionesService? notificacionesService;
 
   @override
   State<MainNavigationPage> createState() => _MainNavigationPageState();
@@ -147,6 +151,18 @@ class _MainNavigationPageState extends State<MainNavigationPage>
     );
   }
 
+  void _abrirNotificaciones() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => NotificacionesPage(
+          service: widget.notificacionesService,
+          sesionClinica: _sesionClinica,
+          onSesionInvalida: _sesionInvalida,
+        ),
+      ),
+    );
+  }
+
   /// Una cita creada, reprogramada o cancelada obliga a refrescar Inicio.
   void _alCambiarCitas() {
     _inicioKey.currentState?.alMostrarPestana();
@@ -181,6 +197,7 @@ class _MainNavigationPageState extends State<MainNavigationPage>
               onVerMisCitas: () => _abrirCitas(agendar: false),
               onVerPagos: () => _seleccionar(2),
               onVerInformacionClinica: _abrirInformacionClinica,
+              onVerNotificaciones: _abrirNotificaciones,
             ),
             CitasPage(
               key: _citasKey,
