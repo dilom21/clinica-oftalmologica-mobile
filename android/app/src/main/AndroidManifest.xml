@@ -1,4 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Android 11+ oculta los servicios de otros paquetes salvo que la app
+         declare la consulta; SpeechRecognizer usa esta acción para descubrir
+         el servicio de reconocimiento instalado. -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
     <!-- La app consume la API del backend de la clínica: sin este permiso el
          APK de release no puede abrir conexiones y toda petición falla con
          "Failed host lookup". El permiso se declara en `main` para que llegue

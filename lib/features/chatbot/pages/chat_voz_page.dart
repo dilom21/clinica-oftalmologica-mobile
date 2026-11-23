@@ -54,13 +54,54 @@ class _ChatVozPageState extends State<ChatVozPage> with WidgetsBindingObserver {
       widget.vozController ??
       ChatVozController(
         conversacion: widget.conversacion,
-        reconocimiento: SpeechToTextReconocimiento(),
+        reconocimiento: SpeechToTextReconocimiento(
+          solicitarConsentimientoGeneral: _autorizarReconocimientoGeneral,
+        ),
         sintesis: FlutterTtsSintesis(),
         reproduccionAutomatica: widget.reproduccionAutomatica,
       );
 
   bool _consentimientoMostrado = false;
   bool _cerrando = false;
+
+  Future<bool> _autorizarReconocimientoGeneral() async {
+    if (!mounted ||
+        _cerrando ||
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return false;
+    }
+    final bool? autorizado = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) => AlertDialog(
+        title: const Text('Usar reconocimiento del dispositivo'),
+        content: const Text(
+          'Android no ofrece reconocimiento exclusivamente local. Si autorizas '
+          'el servicio general, el audio podría enviarse al proveedor de '
+          'reconocimiento configurado en tu dispositivo para transcribirlo. '
+          'Puede requerir conexión a Internet. La aplicación no guarda archivos '
+          'de audio; el proveedor aplica sus propias condiciones de privacidad. '
+          'El texto reconocido se enviará al asistente de la clínica. '
+          'No dictes información clínica sensible. La autorización dura solo '
+          'esta sesión de voz.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Usar el chat escrito'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Autorizo el servicio general'),
+          ),
+        ],
+      ),
+    );
+    return autorizado == true &&
+        mounted &&
+        !_cerrando &&
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+  }
 
   @override
   void initState() {
@@ -115,9 +156,10 @@ class _ChatVozPageState extends State<ChatVozPage> with WidgetsBindingObserver {
               if (!escucharSolo) ...<Widget>[
                 const Text(
                   'El micrófono se usará para transcribir lo que digas y '
-                  'enviarlo al asistente administrativo. El reconocimiento se '
-                  'solicita únicamente en el dispositivo y el audio no se '
-                  'envía al asistente de IA.',
+                  'enviarlo al asistente administrativo. Se prioriza el '
+                  'reconocimiento local. Si no está disponible, te pediremos '
+                  'otra autorización antes de usar el proveedor general, que '
+                  'podría recibir el audio. La app no guarda archivos de audio.',
                   style: TextStyle(fontSize: 13.5, height: 1.45),
                 ),
                 const SizedBox(height: 10),
@@ -174,9 +216,11 @@ class _ChatVozPageState extends State<ChatVozPage> with WidgetsBindingObserver {
             'servicios, profesionales, disponibilidad y tus citas. No realiza '
             'diagnósticos ni sustituye a un profesional de salud.\n\n'
             'El micrófono solo se activa cuando lo pides y se detiene antes '
-            'de reproducir una respuesta. El reconocimiento se solicita en el '
-            'dispositivo; si el sistema no lo permite, la voz se deshabilita y '
-            'puedes continuar por escrito.\n\n'
+            'de reproducir una respuesta. Se prioriza el reconocimiento local. '
+            'El servicio general solo se usa con tu autorización explícita: '
+            'podría enviar audio al proveedor del dispositivo y necesitar '
+            'Internet. La app no guarda audio. Puedes rechazarlo y continuar '
+            'por escrito. El texto final se envía al asistente.\n\n'
             'La síntesis de voz usa el motor del dispositivo. Cuando puede '
             'verificarse una voz local instalada, el asistente puede leer la '
             'respuesta; si no puede verificarse, la información privada se '

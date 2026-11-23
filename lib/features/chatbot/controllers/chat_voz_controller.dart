@@ -44,13 +44,15 @@ class ChatVozController extends ChangeNotifier {
     int maxSilencios = 2,
     int maxErrores = 2,
     Duration retrasoReintento = const Duration(milliseconds: 400),
+    Duration separacionTrasTts = const Duration(milliseconds: 450),
   }) : _conversacion = conversacion,
        _reconocimiento = reconocimiento,
        _sintesis = sintesis,
        _reproduccionAutomatica = reproduccionAutomatica,
        _maxSilencios = maxSilencios,
        _maxErrores = maxErrores,
-       _retrasoReintento = retrasoReintento {
+       _retrasoReintento = retrasoReintento,
+       _separacionTrasTts = separacionTrasTts {
     _generacionConversacion = conversacion.generacion;
     _conversacion.addListener(_alCambiarConversacion);
   }
@@ -61,6 +63,7 @@ class ChatVozController extends ChangeNotifier {
   final int _maxSilencios;
   final int _maxErrores;
   final Duration _retrasoReintento;
+  final Duration _separacionTrasTts;
 
   bool _reproduccionAutomatica;
   EstadoVoz _estado = EstadoVoz.inactivo;
@@ -71,6 +74,7 @@ class ChatVozController extends ChangeNotifier {
   bool _desechado = false;
   bool _activando = false;
   bool _iniciandoEscucha = false;
+  bool _preparandoTts = false;
 
   int _secuencia = 0;
   int _turnoFinalizado = -1;
@@ -207,6 +211,9 @@ class ChatVozController extends ChangeNotifier {
         const Duration(seconds: 30),
       );
     } on TimeoutException {
+      if (kDebugMode) {
+        debugPrint('[CU41Voice][Controller] permission flow timeout');
+      }
       if (!_activa || _desechado) return;
       _estado = EstadoVoz.error;
       _activa = false;
@@ -215,6 +222,9 @@ class ChatVozController extends ChangeNotifier {
       _notificar();
       return;
     } catch (_) {
+      if (kDebugMode) {
+        debugPrint('[CU41Voice][Controller] permission flow exception');
+      }
       if (!_activa || _desechado) return;
       _estado = EstadoVoz.error;
       _activa = false;
@@ -225,6 +235,9 @@ class ChatVozController extends ChangeNotifier {
     if (!_activa || _desechado) return;
 
     if (permiso == EstadoPermisoVoz.denegado) {
+      if (kDebugMode) {
+        debugPrint('[CU41Voice][Controller] permission denied');
+      }
       _estado = EstadoVoz.noDisponible;
       _mensajeError =
           'No se concedió permiso para usar el micrófono. Puedes continuar '
@@ -235,6 +248,9 @@ class ChatVozController extends ChangeNotifier {
     }
 
     if (permiso == EstadoPermisoVoz.noDisponible) {
+      if (kDebugMode) {
+        debugPrint('[CU41Voice][Controller] recognizer unavailable');
+      }
       _estado = EstadoVoz.noDisponible;
       _mensajeError =
           'El reconocimiento de voz local no está disponible en este '
@@ -273,7 +289,18 @@ class ChatVozController extends ChangeNotifier {
     }
 
     // Nunca se escucha mientras el asistente habla.
-    if (_sintesis.hablando) await _sintesis.detener();
+    if (_sintesis.hablando) {
+      try {
+        await _sintesis.detener();
+        if (_sintesis.hablando) throw StateError('tts_stop_not_confirmed');
+      } catch (_) {
+        _pausadoUsuario = true;
+        _estado = EstadoVoz.pausado;
+        _aviso = 'No se confirmó la detención del audio. El micrófono sigue cerrado.';
+        _notificar();
+        return;
+      }
+    }
     if (_reconocimiento.escuchando) await _reconocimiento.detener();
 
     if (!_puedeEscucharAhora()) {
@@ -323,6 +350,11 @@ class ChatVozController extends ChangeNotifier {
     final String limpio = texto.trim();
     if (limpio.isEmpty) return;
     _transcripcion = limpio;
+    if (kDebugMode) {
+      debugPrint(
+        '[CU41Voice][Controller] partial turn=$turno displayOnly=true',
+      );
+    }
     _silencios = 0;
     _notificar();
   }
@@ -334,6 +366,9 @@ class ChatVozController extends ChangeNotifier {
 
   Future<void> _alFinal(String texto, int turno) async {
     if (!_turnoVigente(turno)) return;
+    if (kDebugMode) {
+      debugPrint('[CU41Voice][Controller] final received turn=$turno');
+    }
 
     final String limpio = texto.trim();
     if (limpio.isEmpty) {
@@ -353,8 +388,21 @@ class ChatVozController extends ChangeNotifier {
 
     // El micrófono queda cerrado antes de cualquier reproducción.
     await _reconocimiento.detener();
+    if (_desechado ||
+        !_activa ||
+        !_visible ||
+        !_primerPlano ||
+        _pausadoUsuario ||
+        turno != _secuencia) {
+      return;
+    }
 
     final int generacion = _conversacion.generacion;
+    if (kDebugMode) {
+      debugPrint(
+        '[CU41Voice][Controller] sending final turn=$turno modality=voice',
+      );
+    }
     final MensajeChat? respuesta = await _conversacion.enviar(
       limpio,
       modalidad: ModalidadChat.voz,
@@ -440,7 +488,12 @@ class ChatVozController extends ChangeNotifier {
   /// Reproduce de nuevo la última respuesta.
   Future<void> escucharRespuesta() async {
     final RespuestaChatbot? respuesta = _respuestaActual;
-    if (respuesta == null || _desechado) return;
+    if (respuesta == null ||
+        _desechado ||
+        _preparandoTts ||
+        (_estado == EstadoVoz.respondiendo && _sintesis.hablando)) {
+      return;
+    }
     _pausadoUsuario = false;
     _activa = true;
     await _reproducir(
@@ -450,24 +503,46 @@ class ChatVozController extends ChangeNotifier {
   }
 
   Future<void> _reproducir(String texto, {bool privado = false}) async {
+    if (_preparandoTts || _desechado) return;
+    _preparandoTts = true;
+    try {
+      await _reproducirInterno(texto, privado: privado);
+    } finally {
+      _preparandoTts = false;
+    }
+  }
+
+  Future<void> _reproducirInterno(String texto, {bool privado = false}) async {
     final String limpio = texto.trim();
     if (limpio.isEmpty) {
+      _pausadoUsuario = true;
       _estado = EstadoVoz.pausado;
+      _aviso = 'La respuesta no contiene texto para leer. Pulsa continuar para retomar.';
       _notificar();
       return;
     }
 
-    await _reconocimiento.detener();
-    await _sintesis.detener();
-
-    if (!_activa || _desechado) return;
-
     final int id = ++_idTts;
+    try {
+      await _reconocimiento.detener();
+      await _sintesis.detener();
+    } catch (_) {
+      _alErrorTts(id, 'error_detener_audio');
+      return;
+    }
+
+    if (!_activa || _desechado || id != _idTts || !_visible || !_primerPlano) {
+      return;
+    }
+
     _estado = EstadoVoz.respondiendo;
     nivel.value = 0;
     _notificar();
 
     final bool disponible = await _sintesis.inicializar();
+    if (id != _idTts || _desechado || !_activa || !_visible || !_primerPlano) {
+      return;
+    }
     if (!disponible) {
       if (id != _idTts || _desechado) return;
       _pausadoUsuario = true;
@@ -495,6 +570,7 @@ class ChatVozController extends ChangeNotifier {
         limpio,
         onInicio: () {
           if (_desechado || id != _idTts) return;
+          _diagnosticoTts('start id=$id');
           _estado = EstadoVoz.respondiendo;
           _notificar();
         },
@@ -507,7 +583,18 @@ class ChatVozController extends ChangeNotifier {
   }
 
   void _alTerminarTts(int id) {
+    _diagnosticoTts('complete id=$id current=$_idTts');
     if (_desechado || id != _idTts) return;
+    // Consumir el terminal una vez: callbacks duplicados no abren otra sesión.
+    _idTts++;
+    if (_sintesis.hablando) {
+      _pausadoUsuario = true;
+      _estado = EstadoVoz.pausado;
+      _aviso =
+          'El motor aún indica audio activo. Pulsa continuar para reintentar.';
+      _notificar();
+      return;
+    }
 
     if (!_activa) {
       _estado = EstadoVoz.inactivo;
@@ -523,13 +610,30 @@ class ChatVozController extends ChangeNotifier {
       return;
     }
 
-    _estado = EstadoVoz.escuchando;
-    _notificar();
-    unawaited(_iniciarEscucha());
+    unawaited(_retomarTrasTts(_idTts));
+  }
+
+  Future<void> _retomarTrasTts(int id) async {
+    _diagnosticoTts(
+      'completed; cooldownMs=${_separacionTrasTts.inMilliseconds}',
+    );
+    if (_separacionTrasTts > Duration.zero) {
+      await Future<void>.delayed(_separacionTrasTts);
+    }
+    if (_desechado ||
+        id != _idTts ||
+        !_puedeEscucharAhora() ||
+        _sintesis.hablando) {
+      return;
+    }
+    _diagnosticoTts('completed -> listening');
+    await _iniciarEscucha();
   }
 
   void _alErrorTts(int id, String error) {
     if (_desechado || id != _idTts) return;
+    _diagnosticoTts('error id=$id -> paused');
+    _idTts++;
     _erroresTts++;
     _pausadoUsuario = true;
     _estado = EstadoVoz.pausado;
@@ -541,19 +645,48 @@ class ChatVozController extends ChangeNotifier {
     _notificar();
   }
 
+  void _diagnosticoTts(String evento) {
+    if (kDebugMode) debugPrint('[CU41Voice][Controller][TTS] $evento');
+  }
+
   Future<void> _falloStt(String error) async {
     if (!_activa || _desechado) return;
 
     _erroresStt++;
     _estado = EstadoVoz.error;
 
+    if (error == 'intervencion_sin_final' ||
+        error == 'intervencion_incompleta' ||
+        error.contains('no_match') ||
+        error.contains('speech_timeout')) {
+      _pausadoUsuario = true;
+      _estado = EstadoVoz.pausado;
+      _aviso =
+          'No se confirmó una intervención completa. No se envió al asistente. '
+          'Pulsa continuar y repite la pregunta cuando veas «Te escucho». ';
+      _notificar();
+      await _reconocimiento.cancelar();
+      return;
+    }
+
     if (error == 'sin_reconocimiento_local') {
       _localVerificado = false;
       _activa = false;
       _estado = EstadoVoz.noDisponible;
       _mensajeError =
-          'Este dispositivo no ofrece reconocimiento de voz local para '
-          'español. Por privacidad no se usa un servicio externo. '
+          'No se habilitó el reconocimiento de voz. Sin motor local y sin '
+          'autorización para el servicio general, puedes continuar por escrito.';
+      _notificar();
+      return;
+    }
+
+    if (error == 'error_idioma_local_no_disponible') {
+      _localVerificado = false;
+      _activa = false;
+      _estado = EstadoVoz.noDisponible;
+      _mensajeError =
+          'El reconocedor no aceptó las variantes españolas probadas. '
+          'Por privacidad no se cambia de proveedor automáticamente. '
           'Puedes continuar por escrito.';
       _notificar();
       return;
@@ -659,7 +792,16 @@ class ChatVozController extends ChangeNotifier {
     _idTts++;
     _secuencia++;
     nivel.value = 0;
-    await _sintesis.detener();
+    try {
+      await _sintesis.detener();
+    } catch (_) {
+      _pausadoUsuario = true;
+      _estado = EstadoVoz.pausado;
+      _aviso =
+          'No se confirmó la detención del audio. El micrófono sigue cerrado.';
+      _notificar();
+      return;
+    }
 
     if (_activa && _visible && _primerPlano && !_pausadoUsuario) {
       await _iniciarEscucha();

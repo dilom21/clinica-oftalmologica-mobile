@@ -30,6 +30,7 @@ class _Banco {
       reconocimiento: stt,
       sintesis: tts,
       retrasoReintento: Duration.zero,
+      separacionTrasTts: Duration.zero,
     );
   }
 
@@ -160,7 +161,9 @@ void main() {
     expect(find.text('Conversar por voz'), findsOneWidget);
     expect(find.textContaining('No dictes contraseñas'), findsOneWidget);
     expect(
-      find.textContaining('no se envía al asistente de IA'),
+      find.textContaining(
+        'otra autorización antes de usar el proveedor general',
+      ),
       findsOneWidget,
     );
     expect(banco.stt.iniciarLlamadas, 0);

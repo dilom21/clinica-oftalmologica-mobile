@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
@@ -36,9 +38,18 @@ abstract class SintesisVoz {
 
 /// Adaptador real basado en `flutter_tts`.
 class FlutterTtsSintesis implements SintesisVoz {
-  FlutterTtsSintesis({FlutterTts? tts}) : _tts = tts ?? FlutterTts();
+  FlutterTtsSintesis({
+    FlutterTts? tts,
+    this.limiteReproduccion = const Duration(minutes: 3),
+  }) : _tts = tts ?? FlutterTts();
 
   final FlutterTts _tts;
+
+  /// Límite de seguridad, NO una estimación del fin del audio. Al vencer se
+  /// solicita stop y se notifica error; nunca se simula una finalización.
+  final Duration limiteReproduccion;
+  Timer? _vigilancia;
+  int _operacion = 0;
 
   bool _inicializado = false;
   bool _hablando = false;
@@ -88,7 +99,7 @@ class FlutterTtsSintesis implements SintesisVoz {
 
       _tts.setStartHandler(_alIniciar);
       _tts.setCompletionHandler(_alTerminar);
-      _tts.setCancelHandler(_alTerminar);
+      _tts.setCancelHandler(_alCancelar);
       _tts.setErrorHandler(_alError);
 
       _idioma = elegido;
@@ -122,70 +133,136 @@ class FlutterTtsSintesis implements SintesisVoz {
   }) async {
     final String limpio = texto.trim();
     if (limpio.isEmpty) {
+      if (_hablando) {
+        try {
+          await detener();
+        } catch (_) {
+          onError('error_detener_sintesis');
+          return;
+        }
+      }
       onFin();
       return;
     }
 
+    final int preparacion = _operacion;
     if (!await inicializar()) {
       onError('voz_no_disponible');
       return;
     }
-
-    await detener();
+    if (preparacion != _operacion) return;
+    final int operacion = _operacion + 1;
+    try {
+      await detener();
+    } catch (_) {
+      onError('error_detener_sintesis');
+      return;
+    }
+    if (operacion != _operacion) return;
 
     _onInicio = onInicio;
     _onFin = onFin;
     _onError = onError;
     _hablando = true;
+    _diagnostico('speak requested operation=$operacion');
+    _vigilancia = Timer(limiteReproduccion, () {
+      if (operacion != _operacion || _onFin == null) return;
+      _diagnostico('completion missing operation=$operacion; stopping safely');
+      unawaited(_fallarYDetener('timeout_sintesis'));
+    });
 
     try {
-      await _tts.speak(limpio);
+      final Object? resultado = await _tts.speak(limpio);
+      // Con awaitSpeakCompletion(false) esto confirma aceptación, NO fin de
+      // audio. Solo speak.onComplete puede reanudar la escucha automática.
+      _diagnostico('speak request returned operation=$operacion');
+      if (operacion == _operacion && resultado == 0) {
+        await _fallarYDetener('error_sintesis');
+      }
     } catch (_) {
-      _hablando = false;
-      _limpiarCallbacks();
-      onError('error_sintesis');
+      if (operacion == _operacion) {
+        await _fallarYDetener('error_sintesis');
+      }
     }
   }
 
   void _alIniciar() {
+    if (_onFin == null) return;
+    _diagnostico('start operation=$_operacion');
     _hablando = true;
     _onInicio?.call();
   }
 
   void _alTerminar() {
-    final bool estabaHablando = _hablando;
+    if (_onFin == null) return;
+    _diagnostico('complete operation=$_operacion');
+    final void Function()? callback = _onFin;
     _hablando = false;
     _limpiarCallbacks();
-    if (estabaHablando) _onFin?.call();
+    // Capturar ANTES de limpiar; de lo contrario onFin se pierde siempre.
+    callback?.call();
   }
 
   void _alError(dynamic error) {
-    _hablando = false;
+    if (_onError == null) return;
+    _diagnostico('native error operation=$_operacion');
+    // No registrar el mensaje del motor: puede contener el texto sintetizado.
+    unawaited(_fallarYDetener('error_sintesis'));
+  }
+
+  void _alCancelar() {
+    if (_onError == null) return;
+    _diagnostico('native cancel operation=$_operacion');
+    unawaited(_fallarYDetener('sintesis_cancelada'));
+  }
+
+  Future<void> _fallarYDetener(String codigo) async {
     final void Function(String)? callback = _onError;
-    _limpiarCallbacks();
-    callback?.call('error_sintesis');
+    if (callback == null) return;
+    final Future<void> parada = detener();
+    final int operacion = _operacion;
+    try {
+      await parada;
+    } catch (_) {
+      _diagnostico('stop not confirmed operation=$operacion');
+    }
+    if (operacion == _operacion) callback(codigo);
   }
 
   @override
   Future<void> detener() async {
-    _hablando = false;
+    final int operacion = ++_operacion;
     _limpiarCallbacks();
-    try {
-      await _tts.stop();
-    } catch (_) {
-      // El motor ya estaba detenido.
+    _diagnostico('stop requested operation=$operacion');
+    final Object? resultado = await _tts.stop().timeout(
+      const Duration(seconds: 3),
+    );
+    if (resultado == 0) throw StateError('tts_stop_not_confirmed');
+    if (operacion == _operacion) {
+      _hablando = false;
+      _diagnostico('stop confirmed operation=$operacion');
     }
   }
 
   @override
   Future<void> liberar() async {
-    await detener();
+    try {
+      await detener();
+    } catch (_) {
+      _diagnostico('dispose stop not confirmed');
+    }
   }
 
   void _limpiarCallbacks() {
+    _vigilancia?.cancel();
+    _vigilancia = null;
     _onInicio = null;
     _onFin = null;
     _onError = null;
+  }
+
+  void _diagnostico(String evento) {
+    if (kDebugMode) debugPrint('[CU41Voice][TTS] $evento');
   }
 
   /// Idioma elegido (`null` mientras no se inicializa).

@@ -366,22 +366,93 @@ TTS(texto_voz) -> finalización REAL de TTS -> volver a escuchar
 
 ### STT y privacidad local
 
+Corrección de intervenciones truncadas: se eliminó la promoción del último
+parcial a final a los 250 ms de `done`/`notListening`. También se configura
+`SpeechToText.initialize(finalTimeout: Duration.zero)` para desactivar la
+conversión equivalente dentro del plugin. Los parciales solo actualizan la
+pantalla; no generan solicitudes al chatbot. Se solicita `pauseFor=4s` y
+`listenFor=45s`, con un límite de seguridad total de 47s. Android puede terminar
+antes: estos parámetros no fuerzan al proveedor a prolongar su escucha.
+Tras cierre nativo se esperan hasta 2s por el final (reiniciados por un parcial
+tardío); no se cierra por ese temporizador si el plugin aún indica escucha.
+Sin final no se rescata automáticamente ni un parcial largo: los eventos no
+aportan evidencia suficiente de completitud. Se cancela la captura y se permite
+repetir con acción del paciente, sin enviar ni reintentar en bucle. Los
+interrogativos aislados como «qué» se consideran incompletos incluso si son
+finales; no se exige longitud mínima a otros finales, por ejemplo «Hola».
+Resultados y temporizadores capturan la generación de turno; el controlador
+revalida su turno después de detener STT y antes de enviar. Tras el fin TTS
+confirmado se deja un margen de 450ms antes de abrir STT, revalidando pausa,
+primer plano y generación. Este margen mitiga eco residual, pero su efectividad
+y la segmentación del motor deben probarse físicamente en el Redmi.
+Los diagnósticos propios registran clase de evento y turno, nunca palabras;
+se desactiva el debug interno de STT para no depender de mensajes del proveedor.
+
+Actualización de consentimiento: se prioriza el reconocedor on-device. Si
+Android no lo ofrece, un segundo diálogo exige pulsar «Autorizo el servicio
+general» antes de capturar audio. No hay autorización predeterminada ni
+persistente; dura la sesión de la pantalla de voz. Rechazar conserva el chat
+escrito. El servicio general puede transmitir audio a su proveedor y necesitar
+Internet: no se presenta como offline. La app no guarda archivos de audio y
+envía únicamente el texto final al chatbot con el UUID y modalidad `voz`
+existentes. Los candidatos del modo general priorizan `es-US`; su aceptación
+real depende del servicio, sin enumeración bloqueante de idiomas. No se cambia
+de proveedor ante errores sin nueva autorización. Las protecciones TTS de
+contenido privado siguen dependiendo exclusivamente del motor TTS verificado.
+
 El adaptador real:
 
-1. Solicita permiso contextual.
-2. Elige `es_BO`, luego alternativas `es_419`/latinoamericanas/`es_ES`.
-3. Comprueba `hasOnDeviceSupport` antes de abrir el micrófono.
-4. Inicia `listen` con `onDevice: true`.
-5. Si no hay soporte local, no abre el micrófono y pasa a `noDisponible`,
-   ofreciendo continuar por escrito.
+1. Inicializa el motor general y comprueba el permiso; no llama a
+   `SpeechToText.locales()` durante preparación.
+2. Trata `es_BO`, `es_419`, `es_US`, `es_MX`, `es_ES` como **candidatos**, no
+   como locales anunciados o compatibles. No se consulta la lista de locales
+   porque algunos servicios Android no responden a esa consulta.
+3. Antes de abrir el micrófono comprueba por separado disponibilidad local. En
+   Android consulta `isOnDeviceRecognitionAvailable` (API 31+); iOS consulta
+   `hasOnDeviceSupport` del plugin.
+4. Solo si esa comprobación es positiva, inicia `listen` con `onDevice: true`.
+   El servicio debe aceptar el locale en la sesión; ante rechazo se prueba el
+   siguiente candidato, sin enviar la transcripción al Backend.
+5. Si falta motor general, permiso, soporte on-device o aceptación de locales,
+   se informa la causa y se ofrece continuar por escrito. La modalidad general
+   autorizada es la excepción explícita al requisito on-device descrito arriba.
 
-Limitación documentada: la documentación del plugin advierte que Android puede
-ignorar la preferencia y usar el reconocedor de red. La comprobación previa
-reduce el riesgo, pero **no puede garantizar** procesamiento 100 % local en
-todos los equipos Android. La validación física debe confirmar el motor y la
-política de privacidad del dispositivo.
+Diagnóstico: `speech_to_text 7.5.0` no atendía
+`has_on_device_support` en Android; el canal Dart devolvía `false` y bloqueaba
+la captura, aunque hubiera reconocedor local. Se descartó `7.6.0-beta.4` porque
+su APK falla al compilar Kotlin por declaraciones duplicadas en el plugin. La
+app conserva 7.5.0 y usa un MethodChannel Android mínimo que consulta
+`SpeechRecognizer.isOnDeviceRecognitionAvailable` (API 31+). Esta comprobación
+indica disponibilidad del reconocedor local del dispositivo, **no** enumera
+modelos descargados por idioma. En API 31 el locale solo se confirma si el
+reconocedor local acepta la sesión; ante error de idioma se intenta la variante
+siguiente. No se confía en la lista general de idiomas como prueba offline ni
+se cae deliberadamente al servicio remoto. Los mensajes técnicos de desarrollo
+excluyen audio, transcripciones y datos de sesión.
+
+En el Redmi Note 9 Pro (Android 12/API 31) se comprobó: `initialize=true`,
+permiso concedido, dos servicios generales visibles, pero
+`onDeviceAvailable=false`. El listado `locales()` tardaba más de 8 segundos y
+no demuestra compatibilidad local; se eliminó de la preparación y la
+compatibilidad española queda **sin comprobar** mientras Android reporte
+`onDeviceAvailable=false`. El asistente no intenta reconocimiento remoto.
 
 ### TTS
+
+Corrección del retorno automático a escucha: `_alTerminar()` del adaptador
+guardaba mal el callback (lo borraba antes de invocarlo). Ahora captura `onFin`
+antes de limpiar y el controlador consume cada terminal una sola vez. El
+retorno de `speak()` con `awaitSpeakCompletion(false)` solo confirma aceptación;
+únicamente `speak.onComplete` habilita el siguiente turno automático. Se
+mantienen las guardas de sesión activa, pantalla visible, primer plano y pausa.
+Cancelación o error solicitan stop y pausan; no se tratan como fin normal.
+Un vigilante de 3 minutos para callback ausente solicita stop y reporta error:
+no calcula cuándo acabó el audio ni reactiva el micrófono. Si stop falla o no
+responde en 3 segundos, se conserva el bloqueo de audio activo y no se permite
+abrir STT hasta confirmar una detención posterior. Las trazas de desarrollo
+`[CU41Voice][TTS]` registran eventos e identificadores, nunca texto ni audio.
+Las pruebas del adaptador real usan el canal simulado del plugin y no validan
+audio físico; la verificación en Redmi de esta corrección sigue pendiente.
 
 - Usa directamente `texto_voz`; no se reenvía a ningún LLM.
 - Voz en español, velocidad 0.45, `awaitSpeakCompletion(false)` y callbacks de
@@ -585,12 +656,16 @@ No incluir secretos, JWT ni claves en capturas, logs o documentación.
 
 ## 14. Limitaciones conocidas
 
-- No se validó en dispositivo físico ni emulador Android/iOS. Solo se dispone
-  de Windows/Edge en esta máquina.
+- Se verificó por ADB un Redmi Note 9 Pro, Android 12/API 31, y se instaló el
+  APK con actualización conservando datos. No se inició una sesión de voz ni se
+  validaron STT/TTS por interacción física; por tanto, el reconocimiento real
+  todavía requiere prueba del usuario.
 - La captura golden no valida micrófono, altavoz, permisos reales ni motores
   nativos.
-- Android puede ignorar `onDevice: true`; la app no puede garantizar al 100 %
-  el procesamiento local con el plugin actual.
+- Android 31+ dispone de comprobación nativa del servicio on-device y la app
+  evita escuchar cuando falta. La API 31 no permite consultar previamente la
+  disponibilidad offline por idioma; la sesión local confirma cada variante y
+  el motor puede rechazarla. Se conserva el bloqueo seguro si no acepta ninguna.
 - En iOS/web no puede verificarse la localidad del motor TTS; en Android se usa
   `isLanguageInstalled` como comprobación, pero la política del motor instalado
   debe validarse en dispositivo.

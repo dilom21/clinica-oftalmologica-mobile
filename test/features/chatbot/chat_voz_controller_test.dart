@@ -13,6 +13,7 @@ class _Banco {
     bool iniciarStt = true,
     int maxSilencios = 2,
     int maxErrores = 2,
+    Duration separacionTrasTts = Duration.zero,
   }) {
     api.respuesta = const RespuestaChatbot(
       conversacionId: 'conv-1',
@@ -34,6 +35,7 @@ class _Banco {
       maxSilencios: maxSilencios,
       maxErrores: maxErrores,
       retrasoReintento: Duration.zero,
+      separacionTrasTts: separacionTrasTts,
     );
   }
 
@@ -68,6 +70,23 @@ void main() {
     expect(banco.stt.iniciarLlamadas, 0);
   });
 
+  test(
+    'recupera la activación si el permiso se concede en el siguiente intento',
+    () async {
+      final banco = _Banco(permiso: EstadoPermisoVoz.denegado);
+      addTearDown(banco.cerrar);
+
+      await banco.voz.activar();
+      expect(banco.voz.estado, EstadoVoz.noDisponible);
+      banco.stt.permiso = EstadoPermisoVoz.concedido;
+
+      await banco.voz.reanudar();
+
+      expect(banco.voz.estado, EstadoVoz.escuchando);
+      expect(banco.stt.iniciarLlamadas, 1);
+    },
+  );
+
   test('sin reconocimiento local no abre el micrófono', () async {
     final banco = _Banco(permiso: EstadoPermisoVoz.noDisponible);
     addTearDown(banco.cerrar);
@@ -78,6 +97,23 @@ void main() {
     expect(banco.voz.mensajeError, contains('local'));
     expect(banco.stt.iniciarLlamadas, 0);
   });
+
+  test(
+    'variante local agotada pasa a noDisponible sin reintento remoto',
+    () async {
+      final banco = _Banco();
+      addTearDown(banco.cerrar);
+
+      await banco.voz.activar();
+      banco.stt.error('error_idioma_local_no_disponible');
+      await _flush();
+
+      expect(banco.voz.estado, EstadoVoz.noDisponible);
+      expect(banco.voz.mensajeError, contains('Por privacidad'));
+      expect(banco.api.enviarLlamadas, 0);
+      expect(banco.stt.iniciarLlamadas, 1);
+    },
+  );
 
   test('activación doble no crea dos sesiones de micrófono', () async {
     final banco = _Banco();
