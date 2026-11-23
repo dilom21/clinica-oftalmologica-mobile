@@ -369,15 +369,27 @@ TTS(texto_voz) -> finalización REAL de TTS -> volver a escuchar
 Corrección de intervenciones truncadas: se eliminó la promoción del último
 parcial a final a los 250 ms de `done`/`notListening`. También se configura
 `SpeechToText.initialize(finalTimeout: Duration.zero)` para desactivar la
-conversión equivalente dentro del plugin. Los parciales solo actualizan la
-pantalla; no generan solicitudes al chatbot. Se solicita `pauseFor=4s` y
+conversión equivalente dentro del plugin. Mientras la sesión está activa, los
+parciales solo actualizan la pantalla. Se solicita `pauseFor=4s` y
 `listenFor=45s`, con un límite de seguridad total de 47s. Android puede terminar
 antes: estos parámetros no fuerzan al proveedor a prolongar su escucha.
-Tras cierre nativo se esperan hasta 2s por el final (reiniciados por un parcial
-tardío); no se cierra por ese temporizador si el plugin aún indica escucha.
-Sin final no se rescata automáticamente ni un parcial largo: los eventos no
-aportan evidencia suficiente de completitud. Se cancela la captura y se permite
-repetir con acción del paciente, sin enviar ni reintentar en bucle. Los
+Tras `done`, `notListening` o `error_no_match`, se esperan 2s por un final nativo.
+Si `isListening` sigue activo se comprueba cada 500ms hasta 6s desde el cierre;
+agotado ese plazo se solicita stop y se pausa sin recuperar. El cierre normal
+solicita stop con un máximo de 3s y concede 500ms adicionales al final nativo.
+Un final recibido durante esa espera tiene prioridad; una vez consumido el
+turno, los eventos posteriores no pueden generar un segundo envío.
+
+Sin final se permite una recuperación limitada únicamente tras cierre
+notificado, stop completado y `isListening=false`: la hipótesis debe permanecer
+sin cambios 1s y tener confianza explícita >=0.85 o haberse repetido al menos
+dos veces. Si existe score entre 0 y 0.8 (excluidos valores ausentes), se exige
+repetir; los valores 0/-1 no se interpretan como confianza alta. Una sola
+hipótesis sin score y no corroborada también permite repetir, aunque sea larga.
+Estas son señales de estabilidad, no una garantía semántica de completitud;
+no se usa una longitud mínima. Ante `error_no_match` se preservan esas señales
+y se evalúa la misma política después del cierre, sin cambiar de proveedor.
+El límite global de 47s fuerza salida segura sin recuperación automática. Los
 interrogativos aislados como «qué» se consideran incompletos incluso si son
 finales; no se exige longitud mínima a otros finales, por ejemplo «Hola».
 Resultados y temporizadores capturan la generación de turno; el controlador
@@ -394,7 +406,7 @@ general» antes de capturar audio. No hay autorización predeterminada ni
 persistente; dura la sesión de la pantalla de voz. Rechazar conserva el chat
 escrito. El servicio general puede transmitir audio a su proveedor y necesitar
 Internet: no se presenta como offline. La app no guarda archivos de audio y
-envía únicamente el texto final al chatbot con el UUID y modalidad `voz`
+envía únicamente el texto aceptado (final nativo o recuperación validada) al chatbot con el UUID y modalidad `voz`
 existentes. Los candidatos del modo general priorizan `es-US`; su aceptación
 real depende del servicio, sin enumeración bloqueante de idiomas. No se cambia
 de proveedor ante errores sin nueva autorización. Las protecciones TTS de
@@ -435,7 +447,8 @@ permiso concedido, dos servicios generales visibles, pero
 `onDeviceAvailable=false`. El listado `locales()` tardaba más de 8 segundos y
 no demuestra compatibilidad local; se eliminó de la preparación y la
 compatibilidad española queda **sin comprobar** mientras Android reporte
-`onDeviceAvailable=false`. El asistente no intenta reconocimiento remoto.
+`onDeviceAvailable=false`. El servicio general solo se usa después del
+consentimiento explícito de la sesión, tal como se describe arriba.
 
 ### TTS
 

@@ -111,6 +111,12 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
   String _ultimoParcial = '';
   Timer? _esperaFinal;
   Timer? _limiteTurno;
+  Timer? _estabilidadParcial;
+  bool _parcialEstable = false;
+  int _repeticionesParcial = 0;
+  double _confianzaParcial = -1;
+  bool _cerrandoTurno = false;
+  int _comprobacionesCierre = 0;
   bool _cierreNotificado = false;
   static const Duration pausaEntrePalabras = Duration(seconds: 4);
   static const Duration duracionEscucha = Duration(seconds: 45);
@@ -418,14 +424,17 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
     _finalEmitido = false;
     _ultimoParcial = '';
     _cancelarTemporizadores();
+    _reiniciarEvidenciaParcial();
     _cierreNotificado = false;
     _turnoActivo = true;
     _generacionTurno++;
+    final int generacionIniciada = _generacionTurno;
 
     try {
       await _escucharLocale(onNivel);
+      if (generacionIniciada != _generacionTurno) return false;
 
-      if (!_speech.isListening) {
+      if (!_speech.isListening && !_cierreNotificado && !_finalEmitido) {
         _cancelarTemporizadores();
         _turnoActivo = false;
         onError('micrófono_no_iniciado');
@@ -438,6 +447,7 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
       );
       return true;
     } catch (_) {
+      if (generacionIniciada != _generacionTurno) return false;
       _cancelarTemporizadores();
       _turnoActivo = false;
       onError('error_inicio_reconocimiento');
@@ -454,7 +464,7 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
     _limiteTurno = Timer(duracionEscucha + esperaFinalNativo, () {
       if (generacion != _generacionTurno || !_turnoActivo) return;
       _diagnostico('turn timeout turn=$generacion');
-      _cerrarSinFinal(generacion);
+      _cerrarSinFinal(generacion, permitirRecuperacion: false);
     });
     await _speech
         .listen(
@@ -489,11 +499,26 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
       'nonEmpty=${texto.isNotEmpty}',
     );
     if (!resultado.finalResult) {
+      final String anterior = _normalizarTexto(_ultimoParcial);
+      final String nuevo = _normalizarTexto(texto);
+      if (nuevo.isNotEmpty && nuevo == anterior) {
+        _repeticionesParcial++;
+      } else {
+        _parcialEstable = false;
+        _repeticionesParcial = texto.isEmpty ? 0 : 1;
+        _estabilidadParcial?.cancel();
+        final int generacion = _generacionTurno;
+        _estabilidadParcial = Timer(const Duration(seconds: 1), () {
+          if (generacion == _generacionTurno && _turnoActivo) {
+            _parcialEstable = true;
+          }
+        });
+      }
+      _confianzaParcial = resultado.confidence;
       _ultimoParcial = texto;
       if (texto.isNotEmpty) _onParcial?.call(texto);
-      // Un parcial tardío reinicia solamente la espera de un FINAL nativo,
-      // nunca un temporizador que lo promueva automáticamente a consulta.
-      if (_cierreNotificado) _esperarFinalNativo();
+      // Los parciales no cierran la sesión ni reinician indefinidamente el
+      // presupuesto de cierre. El final nativo tiene prioridad mientras tanto.
       return;
     }
 
@@ -508,33 +533,50 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
     }
     // Un interrogativo aislado no es una pregunta administrativa completa.
     // No se impone longitud mínima: «Hola», «Servicios», etc. siguen válidos.
-    final String normalizado = texto
-        .toLowerCase()
-        .replaceAll(RegExp(r'[¿?¡!.,;:]'), '')
-        .trim();
-    if (const <String>{
-      'qué',
-      'que',
-      'cuál',
-      'cual',
-      'cuáles',
-      'cuales',
-      'quién',
-      'quien',
-      'quiénes',
-      'quienes',
-      'cuándo',
-      'cuando',
-      'dónde',
-      'donde',
-      'cómo',
-      'como',
-    }.contains(normalizado)) {
+    if (_esFragmentoInterrogativo(texto)) {
       _diagnostico('incomplete final rejected turn=$_generacionTurno');
       _onError?.call('intervencion_incompleta');
       return;
     }
     _onFinal?.call(texto);
+  }
+
+  String _normalizarTexto(String texto) => texto
+      .toLowerCase()
+      .replaceAll(RegExp(r'[¿?¡!.,;:]'), '')
+      .trim()
+      .replaceAll(RegExp(r'\s+'), ' ');
+
+  bool _esFragmentoInterrogativo(String texto) => const <String>{
+    'qué',
+    'que',
+    'cuál',
+    'cual',
+    'cuáles',
+    'cuales',
+    'quién',
+    'quien',
+    'quiénes',
+    'quienes',
+    'cuándo',
+    'cuando',
+    'dónde',
+    'donde',
+    'cómo',
+    'como',
+  }.contains(_normalizarTexto(texto));
+
+  bool get _parcialRecuperable {
+    if (_ultimoParcial.isEmpty ||
+        !_parcialEstable ||
+        _esFragmentoInterrogativo(_ultimoParcial)) {
+      return false;
+    }
+    // Confianza ausente no significa confianza alta. Se exige corroboración
+    // (misma hipótesis repetida) o un score explícito alto, además de estabilidad.
+    final bool confianzaDisponible = _confianzaParcial > 0;
+    if (confianzaDisponible && _confianzaParcial < 0.8) return false;
+    return _repeticionesParcial >= 2 || _confianzaParcial >= 0.85;
   }
 
   void _alEstado(String estado) {
@@ -543,7 +585,9 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
     );
     if (!_turnoActivo) return;
     if (estado == SpeechToText.listeningStatus) {
+      if (_cerrandoTurno) return;
       _cierreNotificado = false;
+      _comprobacionesCierre = 0;
       _esperaFinal?.cancel();
       return;
     }
@@ -552,49 +596,87 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
       return;
     }
 
+    if (_cierreNotificado || _cerrandoTurno) return;
     _cierreNotificado = true;
+    _comprobacionesCierre = 0;
     _diagnostico('native session closed; waiting final turn=$_generacionTurno');
     _esperarFinalNativo();
   }
 
-  void _esperarFinalNativo() {
+  void _esperarFinalNativo({bool comprobacion = false}) {
     _esperaFinal?.cancel();
     final int generacion = _generacionTurno;
-    _esperaFinal = Timer(esperaFinalNativo, () {
-      if (generacion != _generacionTurno || !_turnoActivo || _finalEmitido) {
-        return;
-      }
-      if (_speech.isListening) {
-        return; // Sigue activo: no cortar la intervención.
-      }
-      _diagnostico('final missing after closure turn=$generacion');
-      _cerrarSinFinal(generacion);
-    });
+    _esperaFinal = Timer(
+      comprobacion ? const Duration(milliseconds: 500) : esperaFinalNativo,
+      () {
+        if (generacion != _generacionTurno || !_turnoActivo || _finalEmitido) {
+          return;
+        }
+        if (_speech.isListening) {
+          _comprobacionesCierre++;
+          if (_comprobacionesCierre < 9) {
+            _diagnostico(
+              'closure pending turn=$generacion check=$_comprobacionesCierre',
+            );
+            _esperarFinalNativo(comprobacion: true);
+          } else {
+            // Estado atascado durante 6s desde el cierre: stop acotado y pausa.
+            _cerrarSinFinal(generacion, permitirRecuperacion: false);
+          }
+          return;
+        }
+        _diagnostico('final missing after closure turn=$generacion');
+        _cerrarSinFinal(generacion);
+      },
+    );
   }
 
-  void _cerrarSinFinal(int generacion) {
-    if (generacion != _generacionTurno || !_turnoActivo) return;
-    _turnoActivo = false;
+  void _cerrarSinFinal(int generacion, {bool permitirRecuperacion = true}) {
+    if (generacion != _generacionTurno || !_turnoActivo || _cerrandoTurno) {
+      return;
+    }
+    _cerrandoTurno = true;
     _cancelarTemporizadores();
-    unawaited(_cancelarTurnoSinFinal(generacion));
+    unawaited(_cancelarTurnoSinFinal(generacion, permitirRecuperacion));
   }
 
-  Future<void> _cancelarTurnoSinFinal(int generacion) async {
+  Future<void> _cancelarTurnoSinFinal(
+    int generacion,
+    bool permitirRecuperacion,
+  ) async {
     try {
-      await _speech.cancel().timeout(const Duration(seconds: 3));
+      // stop permite que el motor entregue su final pendiente; cancel lo
+      // descartaría. No producir un final sintético (finalTimeout sigue en cero).
+      await _speech.stop().timeout(const Duration(seconds: 3));
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      if (generacion != _generacionTurno || !_turnoActivo) return;
+      if (_speech.isListening) {
+        throw StateError('recognizer_stop_not_confirmed');
+      }
     } catch (_) {
-      if (generacion == _generacionTurno) {
+      if (generacion == _generacionTurno && _turnoActivo) {
+        _cancelarTemporizadores();
+        _turnoActivo = false;
         _onError?.call('intervencion_sin_final');
       }
       return;
     }
-    if (generacion != _generacionTurno) return;
+    if (generacion != _generacionTurno || !_turnoActivo) return;
+    _cancelarTemporizadores();
+    _turnoActivo = false;
+    if (permitirRecuperacion && _cierreNotificado && _parcialRecuperable) {
+      _finalEmitido = true;
+      _diagnostico(
+        'stable partial recovered after confirmed closure turn=$generacion',
+      );
+      _onFinal?.call(_ultimoParcial);
+      return;
+    }
     if (_ultimoParcial.isEmpty) {
       _diagnostico('silence closure turn=$generacion');
       _onSilencio?.call();
     } else {
-      // Sin final nativo no existe evidencia suficiente de completitud. Se
-      // conserva el parcial en pantalla para repetir, pero NO se envía.
+      // Hipótesis no corroborada o de confianza baja: pedir repetir, no enviar.
       _onError?.call('intervencion_sin_final');
     }
   }
@@ -602,8 +684,18 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
   void _cancelarTemporizadores() {
     _esperaFinal?.cancel();
     _limiteTurno?.cancel();
+    _estabilidadParcial?.cancel();
+    _estabilidadParcial = null;
     _esperaFinal = null;
     _limiteTurno = null;
+  }
+
+  void _reiniciarEvidenciaParcial() {
+    _parcialEstable = false;
+    _repeticionesParcial = 0;
+    _confianzaParcial = -1;
+    _cerrandoTurno = false;
+    _comprobacionesCierre = 0;
   }
 
   void _alError(SpeechRecognitionError error) {
@@ -619,6 +711,16 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
     }
 
     if (!_turnoActivo) return;
+    if (mensaje == 'error_no_match' || mensaje == 'error_speech_timeout') {
+      // Algunos proveedores entregan parciales útiles y terminan con no_match.
+      // Dejar margen al final pendiente y comprobar el cierre, sin descartar.
+      if (!_cierreNotificado && !_cerrandoTurno) {
+        _cierreNotificado = true;
+        _comprobacionesCierre = 0;
+        _esperarFinalNativo();
+      }
+      return;
+    }
     _cancelarTemporizadores();
     if (_esErrorLocale(mensaje) && _indiceLocale + 1 < _localesEspanol.length) {
       unawaited(_probarSiguienteLocale());
@@ -647,6 +749,7 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
       _generacionTurno++;
       generacion = _generacionTurno;
       _ultimoParcial = '';
+      _reiniciarEvidenciaParcial();
       _cierreNotificado = false;
       _turnoActivo = true;
       _diagnostico('retry turn=$generacion locale=$_localeId');
