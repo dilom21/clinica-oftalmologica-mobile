@@ -76,6 +76,175 @@ abstract class ReconocimientoVoz {
 ///   explícitamente on-device; la comprobación Android es de dispositivo, no
 ///   de modelo por idioma. Los rechazos de locale se tratan de forma explícita.
 /// - No graba archivos de audio ni registra transcripciones.
+/// Único propietario del plugin por instancia de SpeechToText. Los listeners de
+/// initialize son permanentes; nunca capturan una pantalla ni su consentimiento.
+/// Las operaciones nativas se serializan incluso si el llamador deja de esperar
+/// por timeout: una liberación pendiente no puede cancelar una captura nueva.
+class _CoordinadorSpeech {
+  _CoordinadorSpeech(this.speech);
+
+  static final Expando<_CoordinadorSpeech> _instancias = Expando();
+  static _CoordinadorSpeech para(SpeechToText speech) =>
+      _instancias[speech] ??= _CoordinadorSpeech(speech);
+
+  final SpeechToText speech;
+  Future<void>? _cola;
+  Future<bool>? _inicializacion;
+  SpeechToTextReconocimiento? _propietario;
+  int _sesion = 0;
+  int? _turnoDespacho;
+  bool _cierreFallido = false;
+  void Function(String)? _estado;
+  void Function(SpeechRecognitionError)? _error;
+
+  Future<T> _serializar<T>(Future<T> Function() operacion) {
+    final anterior = _cola;
+    final fin = Completer<void>();
+    _cola = fin.future;
+    final resultado = anterior == null
+        ? Future<T>.sync(operacion)
+        : anterior.then((_) => operacion());
+    void terminar() {
+      if (identical(_cola, fin.future)) _cola = null;
+      fin.complete();
+    }
+
+    unawaited(
+      resultado.then<void>(
+        (_) => terminar(),
+        onError: (Object _, StackTrace _) => terminar(),
+      ),
+    );
+    return resultado;
+  }
+
+  Future<bool> inicializar() {
+    final pendiente = _inicializacion;
+    if (pendiente != null) return pendiente;
+    final solicitud = _serializar(
+      () => speech.initialize(
+        onStatus: (estado) {
+          // El plugin solo proporciona el estado global, no un ID nativo.
+          // Durante la liberación no existe destinatario.
+          final seguro =
+              const {'listening', 'notListening', 'done'}.contains(estado)
+              ? estado
+              : 'other';
+          _diagnostico('status native=$seguro');
+          _estado?.call(estado);
+        },
+        onError: (error) {
+          _diagnostico('error permanent=${error.permanent}');
+          _error?.call(error);
+        },
+        finalTimeout: Duration.zero,
+        debugLogging: false,
+        options: <SpeechConfigOption>[SpeechToText.androidNoBluetooth],
+      ),
+    );
+    _inicializacion = solicitud;
+    void fallo() {
+      if (identical(_inicializacion, solicitud)) _inicializacion = null;
+    }
+
+    // 7.5.0 solo fija los listeners tras un initialize exitoso. Un permiso
+    // denegado no debe impedir reintentar después de concederlo en Ajustes.
+    unawaited(
+      solicitud.then<void>((disponible) {
+        if (!disponible) fallo();
+      }, onError: (Object _, StackTrace _) => fallo()),
+    );
+    return solicitud;
+  }
+
+  bool adquirir(SpeechToTextReconocimiento adaptador) {
+    if (_propietario != null && !identical(_propietario, adaptador)) {
+      return false;
+    }
+    _propietario = adaptador;
+    return true;
+  }
+
+  bool pertenece(SpeechToTextReconocimiento adaptador) =>
+      identical(_propietario, adaptador);
+
+  Future<void> escuchar(
+    SpeechToTextReconocimiento adaptador,
+    int turno,
+    Future<void> Function() escuchar,
+  ) => _serializar(() async {
+    if (!pertenece(adaptador) || turno != adaptador._generacionTurno) return;
+    if (_cierreFallido) throw StateError('previous_capture_not_closed');
+    final sesion = ++_sesion;
+    _turnoDespacho = turno;
+    _estado = (estado) {
+      if (pertenece(adaptador) &&
+          turno == adaptador._generacionTurno &&
+          sesion == _sesion) {
+        adaptador._alEstado(estado);
+      }
+    };
+    _error = (error) {
+      if (pertenece(adaptador) &&
+          turno == adaptador._generacionTurno &&
+          sesion == _sesion) {
+        adaptador._alError(error);
+      }
+    };
+    _diagnostico('listen turn=$turno');
+    await escuchar();
+  });
+
+  Future<void> detener(SpeechToTextReconocimiento adaptador) =>
+      _serializar(() async {
+        if (pertenece(adaptador)) await speech.stop();
+      });
+
+  Future<void> cancelarCaptura(SpeechToTextReconocimiento adaptador) =>
+      _serializar(() async {
+        if (pertenece(adaptador)) await speech.cancel();
+      });
+
+  Future<void> soltar(
+    SpeechToTextReconocimiento adaptador, {
+    bool stop = false,
+  }) {
+    if (!pertenece(adaptador)) return Future<void>.value();
+    // Invalidación síncrona ANTES de cualquier await y de una nueva adquisición.
+    _propietario = null;
+    _estado = null;
+    _error = null;
+    _turnoDespacho = null;
+    ++_sesion;
+    return _serializar(() async {
+      // Siempre cerrar la captura anterior, aunque listen todavía estuviera
+      // arrancando y isListening fuese false cuando se solicitó la salida.
+      try {
+        if (stop) {
+          await speech.stop();
+        } else {
+          await speech.cancel();
+        }
+        _cierreFallido = speech.isListening;
+      } catch (_) {
+        _cierreFallido = true;
+        rethrow;
+      }
+    });
+  }
+
+  void _diagnostico(String evento) {
+    if (kDebugMode) {
+      debugPrint(
+        '[CU41Voice][STTCoordinator] $evento session=$_sesion '
+        'adapter=${_propietario?._idAdaptador ?? 0} '
+        'generation=${_turnoDespacho ?? 0} '
+        'dispatch=${_estado != null} listening=${speech.isListening}',
+      );
+    }
+  }
+}
+
 class SpeechToTextReconocimiento implements ReconocimientoVoz {
   SpeechToTextReconocimiento({
     SpeechToText? speech,
@@ -84,7 +253,11 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
   }) : _speech = speech ?? SpeechToText();
 
   final SpeechToText _speech;
-  final Future<bool> Function()? solicitarConsentimientoGeneral;
+  late final _CoordinadorSpeech _coordinador = _CoordinadorSpeech.para(_speech);
+  static int _secuenciaAdaptador = 0;
+  final int _idAdaptador = ++_secuenciaAdaptador;
+  bool _liberado = false;
+  Future<bool> Function()? solicitarConsentimientoGeneral;
   ModoReconocimientoVoz? _modo;
   final Future<bool> Function(String localeId)? _verificarSoporteLocal;
   static const MethodChannel _canalAndroid = MethodChannel(
@@ -123,7 +296,7 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
   static const Duration esperaFinalNativo = Duration(seconds: 2);
 
   @override
-  bool get escuchando => _speech.isListening;
+  bool get escuchando => _coordinador.pertenece(this) && _speech.isListening;
 
   @override
   bool get procesamientoLocalVerificado => _localVerificado;
@@ -133,6 +306,7 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
 
   @override
   Future<bool> inicializar() {
+    if (_liberado) return Future<bool>.value(false);
     if (_inicializado && _speech.isAvailable) {
       _diagnostico('initialize cached isAvailable=true');
       return Future<bool>.value(true);
@@ -156,19 +330,9 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
     try {
       await _diagnosticarAndroid();
       _diagnostico('plugin initialize invoke');
-      final bool disponible = await _speech
-          .initialize(
-            onError: _alError,
-            onStatus: _alEstado,
-            // Deshabilita la conversión interna del último parcial a final.
-            // Solo onResults nativo puede autorizar un envío al chatbot.
-            finalTimeout: Duration.zero,
-            // Solo trazas sanitizadas propias; el proveedor controla sus
-            // mensajes y no debemos registrar texto reconocido por accidente.
-            debugLogging: false,
-            options: <SpeechConfigOption>[SpeechToText.androidNoBluetooth],
-          )
-          .timeout(const Duration(seconds: 15));
+      final bool disponible = await _coordinador.inicializar().timeout(
+        const Duration(seconds: 15),
+      );
       _inicializado = disponible;
       _diagnostico(
         'plugin initialize returned=$disponible '
@@ -314,7 +478,7 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
     }
   }
 
-  Future<bool> _soporteLocal() async {
+  Future<bool> _soporteLocal(int preparacion) async {
     _diagnostico(
       'local support check start candidateCount=${_localesEspanol.length}',
     );
@@ -323,12 +487,17 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
         final bool available =
             _androidOnDeviceDisponible ??
             await _consultarSoporteOnDeviceAndroid();
+        if (_liberado || preparacion != _generacionTurno) return false;
         _diagnostico('Android on-device deviceCapability=$available');
-        _modo ??= await seleccionarModoReconocimiento(
-          localDisponible: available,
-          solicitarConsentimientoGeneral: () async =>
-              await solicitarConsentimientoGeneral?.call() ?? false,
-        );
+        final modo =
+            _modo ??
+            await seleccionarModoReconocimiento(
+              localDisponible: available,
+              solicitarConsentimientoGeneral: () async =>
+                  await solicitarConsentimientoGeneral?.call() ?? false,
+            );
+        if (_liberado || preparacion != _generacionTurno) return false;
+        _modo = modo;
         if (_modo == null) return false;
         if (available) _modo = ModoReconocimientoVoz.local;
         _localesEspanol = _modo == ModoReconocimientoVoz.generalAndroid
@@ -350,6 +519,7 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
           return disponible;
         },
       );
+      if (_liberado || preparacion != _generacionTurno) return false;
       if (compatible == null) return false;
       _localeId = compatible;
       _indiceLocale = _localesEspanol.indexOf(compatible);
@@ -398,17 +568,33 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
     required void Function() onSilencio,
     void Function(double nivel)? onNivel,
   }) async {
-    if (_speech.isListening) {
+    if (_liberado) return false;
+    if (escuchando) {
       await cancelar();
     }
+    if (_liberado || !_coordinador.adquirir(this)) {
+      onError('reconocimiento_ocupado');
+      return false;
+    }
 
-    final int preparacion = _generacionTurno;
-    if (!await inicializar().timeout(const Duration(seconds: 22))) {
+    final int preparacion = ++_generacionTurno;
+    bool disponible;
+    try {
+      disponible = await inicializar().timeout(const Duration(seconds: 22));
+    } catch (_) {
+      disponible = false;
+    }
+    if (!disponible) {
+      if (preparacion != _generacionTurno) return false;
+      _abandonarCaptura();
       onError('motor_no_disponible');
       return false;
     }
 
-    if (!await _soporteLocal()) {
+    if (preparacion != _generacionTurno) return false;
+    if (!await _soporteLocal(preparacion)) {
+      if (preparacion != _generacionTurno) return false;
+      _abandonarCaptura();
       _localVerificado = false;
       _diagnostico('refusing listen: on-device recognizer unavailable');
       onError('sin_reconocimiento_local');
@@ -437,6 +623,7 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
       if (!_speech.isListening && !_cierreNotificado && !_finalEmitido) {
         _cancelarTemporizadores();
         _turnoActivo = false;
+        _abandonarCaptura();
         onError('micrófono_no_iniciado');
         return false;
       }
@@ -450,6 +637,7 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
       if (generacionIniciada != _generacionTurno) return false;
       _cancelarTemporizadores();
       _turnoActivo = false;
+      _abandonarCaptura();
       onError('error_inicio_reconocimiento');
       return false;
     }
@@ -466,25 +654,37 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
       _diagnostico('turn timeout turn=$generacion');
       _cerrarSinFinal(generacion, permitirRecuperacion: false);
     });
-    await _speech
-        .listen(
-          onResult: (SpeechRecognitionResult resultado) {
-            if (generacion != _generacionTurno) return;
-            _alResultado(resultado);
-          },
-          onSoundLevelChange: (double nivel) {
-            if (generacion == _generacionTurno && _turnoActivo) {
-              onNivel?.call(nivel);
-            }
-          },
-          listenOptions: SpeechListenOptions(
-            onDevice: _modo != ModoReconocimientoVoz.generalAndroid,
-            partialResults: true,
-            listenMode: ListenMode.dictation,
-            cancelOnError: true,
-            pauseFor: pausaEntrePalabras,
-            listenFor: duracionEscucha,
-            localeId: _localeId,
+    await _coordinador
+        .escuchar(
+          this,
+          generacion,
+          () => _speech.listen(
+            onResult: (SpeechRecognitionResult resultado) {
+              if (generacion != _generacionTurno ||
+                  !_coordinador.pertenece(this)) {
+                _diagnostico(
+                  'result sourceGeneration=$generacion dispatch=false',
+                );
+                return;
+              }
+              _alResultado(resultado);
+            },
+            onSoundLevelChange: (double nivel) {
+              if (generacion == _generacionTurno &&
+                  _turnoActivo &&
+                  _coordinador.pertenece(this)) {
+                onNivel?.call(nivel);
+              }
+            },
+            listenOptions: SpeechListenOptions(
+              onDevice: _modo != ModoReconocimientoVoz.generalAndroid,
+              partialResults: true,
+              listenMode: ListenMode.dictation,
+              cancelOnError: true,
+              pauseFor: pausaEntrePalabras,
+              listenFor: duracionEscucha,
+              localeId: _localeId,
+            ),
           ),
         )
         .timeout(const Duration(seconds: 10));
@@ -580,8 +780,11 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
   }
 
   void _alEstado(String estado) {
+    final seguro = const {'listening', 'notListening', 'done'}.contains(estado)
+        ? estado
+        : 'other';
     _diagnostico(
-      'status turn=$_generacionTurno state=$estado active=$_turnoActivo',
+      'status turn=$_generacionTurno state=$seguro active=$_turnoActivo',
     );
     if (!_turnoActivo) return;
     if (estado == SpeechToText.listeningStatus) {
@@ -647,7 +850,7 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
     try {
       // stop permite que el motor entregue su final pendiente; cancel lo
       // descartaría. No producir un final sintético (finalTimeout sigue en cero).
-      await _speech.stop().timeout(const Duration(seconds: 3));
+      await _coordinador.detener(this).timeout(const Duration(seconds: 3));
       await Future<void>.delayed(const Duration(milliseconds: 500));
       if (generacion != _generacionTurno || !_turnoActivo) return;
       if (_speech.isListening) {
@@ -739,7 +942,7 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
     int generacion = _generacionTurno;
     _turnoActivo = false;
     try {
-      await _speech.cancel();
+      await _coordinador.cancelarCaptura(this);
       // El callback nativo de error llega antes de que el servicio libere la
       // sesión en algunos motores. Esta pausa corta permite un reinicio acotado.
       await Future<void>.delayed(const Duration(milliseconds: 200));
@@ -773,37 +976,54 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
       mensaje.contains('language_unavailable');
 
   void _diagnostico(String detalle) {
-    if (kDebugMode) debugPrint('[CU41Voice][STT] $detalle');
+    if (kDebugMode) {
+      debugPrint(
+        '[CU41Voice][STT] adapter=$_idAdaptador '
+        'generation=$_generacionTurno $detalle',
+      );
+    }
+  }
+
+  void _abandonarCaptura() {
+    _limpiarCallbacks();
+    unawaited(
+      _coordinador.soltar(this).catchError((Object _) {
+        _diagnostico('capture cleanup failed');
+      }),
+    );
   }
 
   @override
   Future<void> detener() async {
     _generacionTurno++;
     _turnoActivo = false;
+    _limpiarCallbacks();
     try {
-      if (_speech.isListening) await _speech.stop();
+      await _coordinador.soltar(this, stop: true);
     } catch (_) {
       // El micrófono ya estaba detenido.
     }
-    _limpiarCallbacks();
   }
 
   @override
   Future<void> cancelar() async {
     _generacionTurno++;
     _turnoActivo = false;
+    _modo = null;
+    _localVerificado = false;
+    _limpiarCallbacks();
     try {
-      if (_speech.isListening) await _speech.cancel();
+      await _coordinador.soltar(this);
     } catch (_) {
       // El micrófono ya estaba detenido.
     }
-    _limpiarCallbacks();
   }
 
   @override
   Future<void> liberar() async {
+    _liberado = true;
+    solicitarConsentimientoGeneral = null;
     await cancelar();
-    _modo = null;
   }
 
   void _limpiarCallbacks() {

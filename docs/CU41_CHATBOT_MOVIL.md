@@ -483,6 +483,43 @@ audio físico; la verificación en Redmi de esta corrección sigue pendiente.
   - se informa que la información privada se muestra por escrito.
 - Si no hay voz compatible, se informa y se continúa por escrito.
 
+### STT compartido y reapertura de la pantalla
+
+La inspección del código instalado de `speech_to_text 7.5.0` confirmó que
+`SpeechToText()` es un singleton; `initialize` (líneas 313–319 del plugin)
+retorna sin reemplazar listeners después del primer éxito. `listen`, en cambio,
+reemplaza el listener de resultados. Crear un adaptador por pantalla enlazaba
+resultados a la pantalla nueva y estados/errores a la primera, ya inactiva.
+
+`_CoordinadorSpeech` conserva los listeners globales durante la aplicación y
+despacha a un único propietario con generación de turno. Inicializaciones
+concurrentes comparten un Future y el plugin no vuelve a inicializarse tras el
+éxito; una inicialización fallida permite reintentar permisos. Los adaptadores
+por pantalla conservan únicamente callbacks y consentimiento de esa sesión.
+Cancelar revoca el consentimiento; liberar además elimina su callback y hace
+inutilizable el adaptador. Detener para TTS conserva la autorización de la sesión.
+
+Stop, cancel y listen pasan por una cola. La salida invalida callbacks y
+temporizadores **antes** del await; una captura nueva espera las operaciones
+anteriores, incluso si su llamador sufrió timeout. Si una operación nativa no
+termina, no se abre otro micrófono por encima. Si falla el cierre, se bloquea
+la siguiente captura hasta confirmar una liberación. La activación del
+controlador también verifica su generación tras permisos y preparación TTS.
+
+Las trazas `[CU41Voice][STTCoordinator]` incluyen adaptador destino, sesión,
+generación, estado global nativo y si existe destinatario; nunca transcripciones.
+Los resultados de callbacks anteriores se descartan por generación/propiedad.
+La API del plugin no incluye identificadores nativos en estados/errores: estos
+son globales y se despachan al propietario vigente, o se descartan durante la
+liberación; no se pretende inferir un identificador que el proveedor no expone.
+
+La regresión usa listeners fijados tras initialize: falla en la segunda pantalla
+con el commit `4b942369` (esperado un final, recibido cero) y comprueba 21 aperturas
+con el coordinador. Incluye recuperación de parciales, errores, final después
+de done, exclusión de pantallas, liberación/stop pendientes, consentimiento,
+pausa/finalización/segundo plano durante operaciones y tres turnos con TTS/UUID.
+La validación física de esta corrección en Redmi sigue pendiente.
+
 ### Esfera
 
 - `CustomPainter` + `AnimationController` + `AnimatedBuilder` acotado.

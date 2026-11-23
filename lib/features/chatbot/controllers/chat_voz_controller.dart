@@ -203,6 +203,7 @@ class ChatVozController extends ChangeNotifier {
     _aviso = null;
     _mensajeError = null;
     _estado = EstadoVoz.solicitandoPermiso;
+    final int activacion = ++_secuencia;
     _notificar();
 
     EstadoPermisoVoz permiso;
@@ -214,7 +215,7 @@ class ChatVozController extends ChangeNotifier {
       if (kDebugMode) {
         debugPrint('[CU41Voice][Controller] permission flow timeout');
       }
-      if (!_activa || _desechado) return;
+      if (!_activa || _desechado || activacion != _secuencia) return;
       _estado = EstadoVoz.error;
       _activa = false;
       _pausadoUsuario = true;
@@ -225,14 +226,14 @@ class ChatVozController extends ChangeNotifier {
       if (kDebugMode) {
         debugPrint('[CU41Voice][Controller] permission flow exception');
       }
-      if (!_activa || _desechado) return;
+      if (!_activa || _desechado || activacion != _secuencia) return;
       _estado = EstadoVoz.error;
       _activa = false;
       _mensajeError = 'No se pudo preparar el micrófono. Puedes reintentar o continuar por escrito.';
       _notificar();
       return;
     }
-    if (!_activa || _desechado) return;
+    if (!_activa || _desechado || activacion != _secuencia) return;
 
     if (permiso == EstadoPermisoVoz.denegado) {
       if (kDebugMode) {
@@ -266,7 +267,7 @@ class ChatVozController extends ChangeNotifier {
     // La síntesis es opcional: si falla, la conversación puede seguir por
     // escrito o con turnos manuales.
     await _sintesis.inicializar();
-    if (!_activa || _desechado) return;
+    if (!_activa || _desechado || activacion != _secuencia) return;
 
     await _iniciarEscucha();
   }
@@ -282,6 +283,7 @@ class ChatVozController extends ChangeNotifier {
   }
 
   Future<void> _iniciarEscuchaInterno() async {
+    final preparacion = _secuencia;
     if (!_puedeEscucharAhora()) {
       _estado = EstadoVoz.pausado;
       _notificar();
@@ -301,7 +303,9 @@ class ChatVozController extends ChangeNotifier {
         return;
       }
     }
+    if (_desechado || preparacion != _secuencia) return;
     if (_reconocimiento.escuchando) await _reconocimiento.detener();
+    if (_desechado || preparacion != _secuencia) return;
 
     if (!_puedeEscucharAhora()) {
       _estado = EstadoVoz.pausado;
@@ -334,7 +338,11 @@ class ChatVozController extends ChangeNotifier {
   }
 
   bool _puedeEscucharAhora() {
-    return _activa && _visible && _primerPlano && !_pausadoUsuario;
+    return !_desechado &&
+        _activa &&
+        _visible &&
+        _primerPlano &&
+        !_pausadoUsuario;
   }
 
   bool _turnoVigente(int turno) {

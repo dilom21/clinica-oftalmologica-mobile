@@ -23,6 +23,10 @@ class _Speech extends SpeechToText {
   SpeechErrorListener? error;
   int paradas = 0;
   bool detenerCierra = true;
+  int inicializaciones = 0;
+  Completer<void>? inicializacionPendiente;
+  Completer<void>? inicioPendiente;
+  Completer<void>? cancelacionPendiente;
   Completer<void>? paradaPendiente;
   final resultados = <SpeechResultListener>[];
   final opciones = <SpeechListenOptions>[];
@@ -42,6 +46,12 @@ class _Speech extends SpeechToText {
     Duration finalTimeout = SpeechToText.defaultFinalTimeout,
     List<SpeechConfigOption>? options,
   }) async {
+    inicializaciones++;
+    // Semántica REAL 7.5.0: initialize no sustituye listeners tras el éxito.
+    if (disponible) return true;
+    if (inicializacionPendiente != null) {
+      await inicializacionPendiente!.future;
+    }
     timeoutFinal = finalTimeout;
     estado = onStatus;
     error = onError;
@@ -63,6 +73,7 @@ class _Speech extends SpeechToText {
     sampleRate = 0,
     SpeechListenOptions? listenOptions,
   }) async {
+    if (inicioPendiente != null) await inicioPendiente!.future;
     resultados.add(onResult!);
     opciones.add(listenOptions!);
     status('listening');
@@ -101,6 +112,9 @@ class _Speech extends SpeechToText {
 
   @override
   Future<void> cancel() async {
+    if (cancelacionPendiente != null) await cancelacionPendiente!.future;
+    status('notListening');
+    status('done');
     activo = false;
   }
 }
@@ -162,6 +176,254 @@ void main() {
   const pregunta = '¿Qué oftalmólogos atienden en esta clínica?';
   const horarios =
       '¿Qué horarios tiene Salet Ejemplo para el 26 de noviembre de 2026?';
+
+  testWidgets(
+    'regresión: 21 pantallas nuevas reciben los listeners fijados del plugin',
+    (tester) async {
+      await voz.activar();
+      speech.emitir(pregunta, final_: true);
+      await tester.pump();
+      expect(api.enviarLlamadas, 1);
+      await voz.salir();
+      final primerEstado = speech.estado;
+      final primerError = speech.error;
+      for (var i = 0; i < 20; i++) {
+        var finales = 0;
+        var errores = 0;
+        final nuevo = SpeechToTextReconocimiento(
+          speech: speech,
+          solicitarConsentimientoGeneral: () async => true,
+        );
+        expect(
+          await nuevo.iniciar(
+            onParcial: (_) {},
+            onFinal: (_) => finales++,
+            onError: (_) => errores++,
+            onSilencio: () {},
+          ),
+          isTrue,
+        );
+        expect(identical(speech.estado, primerEstado), isTrue);
+        expect(identical(speech.error, primerError), isTrue);
+        speech.emitir(pregunta);
+        speech.emitir(pregunta);
+        speech.status('notListening');
+        speech.status('done');
+        // Callback de resultados de la primera pantalla no pertenece a esta.
+        speech.emitir('resultado antiguo', final_: true, sesion: 0);
+        await tester.pump(const Duration(seconds: 2));
+        await tester.pump(const Duration(milliseconds: 500));
+        expect(finales, 1, reason: 'pantalla ${i + 2}');
+        expect(api.enviarLlamadas, 1);
+        await nuevo.detener();
+        expect(
+          await nuevo.iniciar(
+            onParcial: (_) {},
+            onFinal: (_) => finales++,
+            onError: (_) => errores++,
+            onSilencio: () {},
+          ),
+          isTrue,
+        );
+        speech.error?.call(SpeechRecognitionError('error_audio', true));
+        expect(errores, 1);
+        await nuevo.liberar();
+      }
+      expect(speech.inicializaciones, 1);
+    },
+  );
+
+  testWidgets('una segunda pantalla no roba la captura ni puede detenerla', (
+    tester,
+  ) async {
+    await voz.activar();
+    final segunda = SpeechToTextReconocimiento(speech: speech);
+    String? error;
+    expect(
+      await segunda.iniciar(
+        onParcial: (_) {},
+        onFinal: (_) {},
+        onError: (e) => error = e,
+        onSilencio: () {},
+      ),
+      isFalse,
+    );
+    expect(error, 'reconocimiento_ocupado');
+    await segunda.liberar();
+    expect(speech.activo, isTrue);
+    speech.emitir(pregunta, final_: true);
+    await tester.pump();
+    expect(api.enviarLlamadas, 1);
+  });
+
+  testWidgets(
+    'reabrir espera cancel pendiente; liberar antiguo no toca nuevo',
+    (tester) async {
+      await voz.activar();
+      speech.cancelacionPendiente = Completer<void>();
+      final salida = stt.liberar();
+      final nueva = SpeechToTextReconocimiento(
+        speech: speech,
+        solicitarConsentimientoGeneral: () async => true,
+      );
+      var finales = 0;
+      final inicio = nueva.iniciar(
+        onParcial: (_) {},
+        onFinal: (_) => finales++,
+        onError: (_) {},
+        onSilencio: () {},
+      );
+      await tester.pump();
+      expect(speech.resultados, hasLength(1));
+      speech.cancelacionPendiente!.complete();
+      await salida;
+      expect(await inicio, isTrue);
+      await stt.liberar();
+      expect(speech.activo, isTrue);
+      speech.status('done');
+      speech.emitir(pregunta, final_: true);
+      await tester.pump();
+      expect(finales, 1);
+      await nueva.liberar();
+    },
+  );
+
+  for (final accion in ['pausa', 'finalizar', 'segundo plano']) {
+    testWidgets('$accion durante listen pendiente no deja micrófono abierto', (
+      tester,
+    ) async {
+      speech.inicioPendiente = Completer<void>();
+      final activacion = voz.activar();
+      await tester.pump();
+      final cierre = switch (accion) {
+        'pausa' => voz.pausar(),
+        'finalizar' => voz.finalizarConversacion(),
+        _ => voz.suspenderPorCicloDeVida(),
+      };
+      speech.inicioPendiente!.complete();
+      await activacion;
+      await cierre;
+      speech.emitir(pregunta, final_: true, sesion: 0);
+      voz.reanudarCicloDeVida();
+      await tester.pump();
+      expect(speech.activo, isFalse);
+      expect(api.enviarLlamadas, 0);
+      expect(speech.resultados, hasLength(1));
+    });
+  }
+
+  testWidgets('consentimiento pendiente de pantalla destruida no sobrevive', (
+    tester,
+  ) async {
+    final permiso = Completer<bool>();
+    final antigua = SpeechToTextReconocimiento(
+      speech: speech,
+      solicitarConsentimientoGeneral: () => permiso.future,
+    );
+    final inicio = antigua.iniciar(
+      onParcial: (_) {},
+      onFinal: (_) {},
+      onError: (_) => fail('callback destruido'),
+      onSilencio: () {},
+    );
+    await tester.pump();
+    await antigua.liberar();
+    permiso.complete(true);
+    expect(await inicio, isFalse);
+    expect(antigua.solicitarConsentimientoGeneral, isNull);
+    var solicitudes = 0;
+    final nueva = SpeechToTextReconocimiento(
+      speech: speech,
+      solicitarConsentimientoGeneral: () async {
+        solicitudes++;
+        return false;
+      },
+    );
+    expect(
+      await nueva.iniciar(
+        onParcial: (_) {},
+        onFinal: (_) {},
+        onError: (_) {},
+        onSilencio: () {},
+      ),
+      isFalse,
+    );
+    expect(solicitudes, 1);
+    expect(speech.resultados, isEmpty);
+    await nueva.liberar();
+  });
+
+  for (final accion in ['pausa', 'finalizar', 'segundo plano']) {
+    testWidgets(
+      '$accion durante initialize no continúa la activación antigua',
+      (tester) async {
+        speech.inicializacionPendiente = Completer<void>();
+        final activacion = voz.activar();
+        await tester.pump();
+        switch (accion) {
+          case 'pausa':
+            await voz.pausar();
+          case 'finalizar':
+            await voz.finalizarConversacion();
+          default:
+            await voz.suspenderPorCicloDeVida();
+            voz.reanudarCicloDeVida();
+        }
+        speech.inicializacionPendiente!.complete();
+        await activacion;
+        expect(speech.resultados, isEmpty);
+        expect(api.enviarLlamadas, 0);
+      },
+    );
+  }
+
+  testWidgets(
+    'stop antiguo pendiente termina antes de escuchar en otra pantalla',
+    (tester) async {
+      await voz.activar();
+      speech.emitir(pregunta, confianza: 0.95);
+      speech.status('notListening');
+      speech.paradaPendiente = Completer<void>();
+      await tester.pump(const Duration(seconds: 2));
+      final cierre = stt.liberar();
+      final nueva = SpeechToTextReconocimiento(
+        speech: speech,
+        solicitarConsentimientoGeneral: () async => true,
+      );
+      final inicio = nueva.iniciar(
+        onParcial: (_) {},
+        onFinal: (_) {},
+        onError: (_) {},
+        onSilencio: () {},
+      );
+      await tester.pump();
+      expect(speech.resultados, hasLength(1));
+      speech.paradaPendiente!.complete();
+      await cierre;
+      expect(await inicio, isTrue);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(speech.activo, isTrue);
+      expect(api.enviarLlamadas, 0);
+      await nueva.liberar();
+    },
+  );
+
+  testWidgets(
+    'cancelar revoca el consentimiento incluso en el mismo adaptador',
+    (tester) async {
+      var solicitudes = 0;
+      stt.solicitarConsentimientoGeneral = () async {
+        solicitudes++;
+        return true;
+      };
+      await voz.activar();
+      expect(solicitudes, 1);
+      await voz.pausar();
+      await voz.reanudar();
+      expect(solicitudes, 2);
+      await voz.salir();
+    },
+  );
 
   testWidgets(
     'parcial qué, pausa breve y pregunta completa: un solo envío final',

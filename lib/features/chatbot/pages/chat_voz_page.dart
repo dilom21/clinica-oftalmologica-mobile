@@ -33,7 +33,8 @@ class ChatVozPage extends StatefulWidget {
   final ClinicaSesion? clinica;
 
   /// Controlador inyectable en pruebas. Si es `null`, la página crea los
-  /// adaptadores reales de STT/TTS y libera sus recursos al cerrarse.
+  /// adaptadores de sesión STT/TTS y los libera al cerrarse. El plugin STT y
+  /// sus listeners globales pertenecen al coordinador compartido de la app.
   final ChatVozController? vozController;
 
   /// Respuesta pública que se desea escuchar desde el chat escrito.
@@ -307,6 +308,7 @@ class _ChatVozPageState extends State<ChatVozPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _cerrando = true;
     WidgetsBinding.instance.removeObserver(this);
     if (_propio) {
       _voz.dispose();
