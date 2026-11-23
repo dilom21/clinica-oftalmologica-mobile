@@ -13,6 +13,8 @@ import '../../pagos/pages/pagos_page.dart';
 import '../../pagos/services/pagos_service.dart';
 import '../../pagos/services/stripe_payment_service.dart';
 import '../../perfil_paciente/pages/perfil_page.dart';
+import '../../notificaciones/pages/notificaciones_page.dart';
+import '../../notificaciones/services/push_runtime.dart';
 
 /// Contenedor principal del área autenticada (pacientes).
 ///
@@ -66,6 +68,8 @@ class _MainNavigationPageState extends State<MainNavigationPage>
   /// `IndexedStack` conserva el estado de cada pestaña y no vuelve a ejecutar
   /// `initState`, por eso el refresco se pide explícitamente desde aquí.
   final GlobalKey<PagosPageState> _pagosKey = GlobalKey<PagosPageState>();
+  final GlobalKey<NotificacionesPageState> _notificacionesKey =
+      GlobalKey<NotificacionesPageState>();
 
   /// Clínica de la sesión activa (solo lectura para la interfaz).
   late final SesionClinica _sesionClinica =
@@ -89,6 +93,7 @@ class _MainNavigationPageState extends State<MainNavigationPage>
     // Al volver del segundo plano se refresca la pestaña visible: una cita o un
     // pago registrados en recepción deben verse sin reiniciar la app.
     WidgetsBinding.instance.addObserver(this);
+    PushRuntime.coordinator.activateAuthenticatedPatient();
   }
 
   @override
@@ -131,6 +136,10 @@ class _MainNavigationPageState extends State<MainNavigationPage>
     if (index == 2) {
       // Solo lectura (consultas/historial): nunca crea una intención de pago.
       _pagosKey.currentState?.alMostrarPestana();
+      return;
+    }
+    if (index == 3) {
+      _notificacionesKey.currentState?.refrescar();
     }
   }
 
@@ -234,6 +243,10 @@ class _MainNavigationPageState extends State<MainNavigationPage>
               pagosService: widget.pagosService,
               stripeService: widget.stripeService,
             ),
+            NotificacionesPage(
+              key: _notificacionesKey,
+              onSesionInvalida: _sesionInvalida,
+            ),
             PerfilPage(
               clinica: _sesionClinica.clinica,
               alCerrarSesion: () {
@@ -302,6 +315,11 @@ class _MainNavigationPageState extends State<MainNavigationPage>
                 icon: Icon(Icons.payments_outlined),
                 selectedIcon: Icon(Icons.payments),
                 label: 'Pagos',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.notifications_none),
+                selectedIcon: Icon(Icons.notifications),
+                label: 'Avisos',
               ),
               NavigationDestination(
                 icon: Icon(Icons.person_outline),

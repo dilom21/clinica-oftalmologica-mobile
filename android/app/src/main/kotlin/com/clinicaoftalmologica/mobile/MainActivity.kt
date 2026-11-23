@@ -1,4 +1,4 @@
-package com.example.clinica_oftalmologica_mobile
+package com.clinicaoftalmologica.mobile
 
 import android.os.Build
 import android.speech.RecognitionService
