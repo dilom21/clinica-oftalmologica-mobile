@@ -176,6 +176,9 @@ class _MainNavigationPageState extends State<MainNavigationPage>
 
   /// Una cita creada, reprogramada o cancelada obliga a refrescar Inicio.
   void _alCambiarCitas() {
+    // También puede venir del CU10 fuera del chat: una propuesta en memoria
+    // no debe sobrevivir al cambio real de la agenda del paciente.
+    _chatbot.invalidarTarjetas();
     _inicioKey.currentState?.alMostrarPestana();
   }
 

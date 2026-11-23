@@ -369,10 +369,35 @@ class TarjetaPropuestaCita extends TarjetaChatbot {
   String get horaInicioCorta => _horaCorta(horaInicio);
   String get horaFinCorta => _horaCorta(horaFin);
 
+  /// Datos del contrato, no una reserva ni garantía de disponibilidad.
+  bool get datosValidos {
+    final inicio = segundosHoraChat(horaInicio);
+    final fin = segundosHoraChat(horaFin);
+    return (oftalmologoId ?? 0) > 0 &&
+        fecha != null &&
+        inicio != null &&
+        fin != null &&
+        fin > inicio &&
+        !reservada &&
+        requiereConfirmacion &&
+        (profesional?.id == null || profesional!.id == oftalmologoId);
+  }
+
+  DateTime? get inicioLocal {
+    final segundos = segundosHoraChat(horaInicio);
+    final dia = fecha;
+    if (dia == null || segundos == null) return null;
+    return DateTime(
+      dia.year,
+      dia.month,
+      dia.day,
+    ).add(Duration(seconds: segundos));
+  }
+
   factory TarjetaPropuestaCita.fromJson(Map<String, dynamic> json) {
     return TarjetaPropuestaCita(
       oftalmologoId: _entero(json['oftalmologo_id']),
-      fecha: _fecha(json['fecha']),
+      fecha: _fechaPropuesta(json['fecha']),
       horaInicio: _texto(json['hora_inicio']) ?? '',
       horaFin: _texto(json['hora_fin']) ?? '',
       profesional: _objeto(json['profesional'], ProfesionalChat.fromJson),
@@ -627,6 +652,31 @@ DateTime? _fecha(Object? valor) {
   final String texto = valor.trim();
   if (texto.isEmpty) return null;
   return DateTime.tryParse(texto);
+}
+
+DateTime? _fechaPropuesta(Object? valor) {
+  if (valor is! String || !RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(valor)) {
+    return null;
+  }
+  final fecha = DateTime.tryParse(valor);
+  if (fecha == null || fecha.toIso8601String().substring(0, 10) != valor) {
+    return null; // DateTime normaliza, por ejemplo, un 30 de febrero.
+  }
+  return fecha;
+}
+
+/// Valida HH:mm[:ss] sin normalizar horas inexistentes.
+int? segundosHoraChat(String valor) {
+  if (!RegExp(r'^\d{2}:\d{2}(?::\d{2})?$').hasMatch(valor)) return null;
+  final partes = valor.split(':').map(int.parse).toList();
+  if (partes[0] > 23 ||
+      partes[1] > 59 ||
+      (partes.length == 3 && partes[2] > 59)) {
+    return null;
+  }
+  return partes[0] * 3600 +
+      partes[1] * 60 +
+      (partes.length == 3 ? partes[2] : 0);
 }
 
 List<T> _lista<T>(Object? valor, T Function(Map<String, dynamic>) constructor) {

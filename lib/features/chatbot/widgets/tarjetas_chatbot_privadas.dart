@@ -5,16 +5,19 @@ class _TarjetaPropuesta extends StatelessWidget {
     required this.tarjeta,
     required this.acciones,
     required this.vigente,
+    required this.habilitada,
+    required this.mensajeId,
+    required this.indice,
   });
 
   final TarjetaPropuestaCita tarjeta;
   final AccionesTarjetasChatbot acciones;
   final bool vigente;
+  final bool habilitada;
+  final String mensajeId;
+  final int indice;
 
-  bool get _completa =>
-      (tarjeta.oftalmologoId ?? 0) > 0 &&
-      tarjeta.fecha != null &&
-      tarjeta.horaInicio.trim().isNotEmpty;
+  bool get _completa => tarjeta.datosValidos;
 
   @override
   Widget build(BuildContext context) {
@@ -82,8 +85,13 @@ class _TarjetaPropuesta extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           FilledButton.icon(
-            onPressed: vigente && _completa
-                ? () => acciones.onContinuarAgendamiento?.call(tarjeta)
+            onPressed:
+                vigente &&
+                    habilitada &&
+                    _completa &&
+                    acciones.onContinuarAgendamiento != null
+                ? () =>
+                      acciones.onContinuarAgendamiento!.call(mensajeId, indice)
                 : null,
             icon: const Icon(Icons.arrow_forward, size: 18),
             label: const Text('Continuar al agendamiento'),

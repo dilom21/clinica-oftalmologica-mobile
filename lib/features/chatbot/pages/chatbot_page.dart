@@ -79,6 +79,7 @@ class _ChatbotPageState extends State<ChatbotPage> {
   final Set<int> _profesionalesSolicitados = <int>{};
 
   bool _cercaDelFondo = true;
+  bool _abriendoPropuesta = false;
   int _ultimoConteo = 0;
   late bool _reproduccionAutomatica = widget.reproduccionAutomatica;
 
@@ -297,11 +298,15 @@ class _ChatbotPageState extends State<ChatbotPage> {
     );
   }
 
-  void _abrirAgendamiento({PreseleccionCita? preseleccion}) {
-    Navigator.of(context).push(
+  Future<void> _abrirAgendamiento({
+    PreseleccionCita? preseleccion,
+    Future<bool> Function()? validarContexto,
+  }) async {
+    await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => ChatAgendamientoPage(
           preseleccion: preseleccion,
+          validarContexto: validarContexto,
           clinica: widget.clinica,
           agendaService: widget.agendaService,
           pacienteService: widget.pacienteService,
@@ -366,25 +371,29 @@ class _ChatbotPageState extends State<ChatbotPage> {
     );
   }
 
-  void _continuarPropuesta(TarjetaPropuestaCita propuesta) {
-    final int? id = propuesta.oftalmologoId;
-    final DateTime? fecha = propuesta.fecha;
-    if (id == null || id <= 0 || fecha == null) {
-      _avisar('La propuesta no tiene datos suficientes para continuar.');
-      return;
+  Future<void> _continuarPropuesta(String mensajeId, int indice) async {
+    if (_abriendoPropuesta) return;
+    _abriendoPropuesta = true;
+    try {
+      final propuesta = await _chatbot.prepararPropuesta(mensajeId, indice);
+      if (!mounted) return;
+      if (propuesta == null || !propuesta.datosValidos) {
+        _avisar('La propuesta ya no está vigente. Solicita una nueva.');
+        return;
+      }
+      final fecha = propuesta.fecha!;
+      await _abrirAgendamiento(
+        validarContexto: () async =>
+            await _chatbot.prepararPropuesta(mensajeId, indice) != null,
+        preseleccion: PreseleccionCita(
+          oftalmologoId: propuesta.oftalmologoId!,
+          fecha: DateTime(fecha.year, fecha.month, fecha.day),
+          horaInicio: propuesta.horaInicio,
+        ),
+      );
+    } finally {
+      _abriendoPropuesta = false;
     }
-    if (propuesta.horaInicio.trim().isEmpty) {
-      _avisar('La propuesta no incluye una hora de inicio válida.');
-      return;
-    }
-
-    _abrirAgendamiento(
-      preseleccion: PreseleccionCita(
-        oftalmologoId: id,
-        fecha: DateTime(fecha.year, fecha.month, fecha.day),
-        horaInicio: propuesta.horaInicio,
-      ),
-    );
   }
 
   void _navegar(TarjetaNavegacion navegacion) {
@@ -566,6 +575,7 @@ class _ChatbotPageState extends State<ChatbotPage> {
                               mensajes: _chatbot.mensajes,
                               enviando: _chatbot.enviando,
                               tarjetasInvalidas: _chatbot.tarjetasInvalidas,
+                              propuestaVigente: _chatbot.propuestaVigente,
                               puedeReintentar: _chatbot.puedeEnviar,
                               scrollController: _scroll,
                               acciones: _accionesTarjetas(),

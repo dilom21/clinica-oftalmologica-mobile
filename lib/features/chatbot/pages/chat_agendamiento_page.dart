@@ -23,6 +23,7 @@ class ChatAgendamientoPage extends StatelessWidget {
     this.pacienteService,
     this.onSesionInvalida,
     this.onCitasCambiadas,
+    this.validarContexto,
   });
 
   final PreseleccionCita? preseleccion;
@@ -31,6 +32,7 @@ class ChatAgendamientoPage extends StatelessWidget {
   final PacienteService? pacienteService;
   final Future<void> Function()? onSesionInvalida;
   final VoidCallback? onCitasCambiadas;
+  final Future<bool> Function()? validarContexto;
 
   void _abrirMisCitas(BuildContext context) {
     Navigator.of(context).push(
@@ -59,6 +61,8 @@ class ChatAgendamientoPage extends StatelessWidget {
       ),
       body: SafeArea(
         child: AgendarCitaView(
+          validarContexto: validarContexto,
+          revalidarAlConfirmar: true,
           preseleccion: preseleccion,
           agendaService: agendaService,
           pacienteService: pacienteService,

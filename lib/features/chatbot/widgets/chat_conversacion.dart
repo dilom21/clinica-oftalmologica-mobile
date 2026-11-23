@@ -11,6 +11,7 @@ class ChatConversacion extends StatelessWidget {
     required this.mensajes,
     required this.enviando,
     required this.tarjetasInvalidas,
+    required this.propuestaVigente,
     required this.puedeReintentar,
     required this.scrollController,
     required this.acciones,
@@ -23,6 +24,7 @@ class ChatConversacion extends StatelessWidget {
   final List<MensajeChat> mensajes;
   final bool enviando;
   final bool tarjetasInvalidas;
+  final bool Function(String mensajeId, int indice) propuestaVigente;
   final bool puedeReintentar;
   final ScrollController scrollController;
   final AccionesTarjetasChatbot acciones;
@@ -80,6 +82,10 @@ class ChatConversacion extends StatelessWidget {
                   padding: const EdgeInsets.only(left: 38, top: 2),
                   child: TarjetasChatbot(
                     tarjetas: mensaje.tarjetas,
+                    mensajeId: mensaje.id,
+                    propuestaVigente: (indice) =>
+                        propuestaVigente(mensaje.id, indice),
+                    accionesHabilitadas: !enviando,
                     vigente:
                         esUltimoAsistente && !tarjetasInvalidas && !enviando,
                     acciones: acciones,

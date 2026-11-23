@@ -31,6 +31,8 @@ class AgendarCitaView extends StatefulWidget {
     this.onSesionInvalida,
     this.onVerMisCitas,
     this.preseleccion,
+    this.validarContexto,
+    this.revalidarAlConfirmar = false,
   });
 
   /// Servicio de agenda; inyectable en pruebas.
@@ -55,6 +57,10 @@ class AgendarCitaView extends StatefulWidget {
   /// formulario: la disponibilidad se vuelve a consultar y NUNCA se registra
   /// una cita sin confirmación explícita del paciente.
   final PreseleccionCita? preseleccion;
+
+  /// Guardas opcionales de CU41: nunca convierten la propuesta en una reserva.
+  final Future<bool> Function()? validarContexto;
+  final bool revalidarAlConfirmar;
 
   @override
   State<AgendarCitaView> createState() => AgendarCitaViewState();
@@ -383,6 +389,7 @@ class AgendarCitaViewState extends State<AgendarCitaView> {
 
     final OftalmologoAgenda? oftalmologo = _oftalmologo;
     final RanuraDisponible? ranura = _ranura;
+    final fechaSeleccionada = _fecha;
 
     if (oftalmologo == null || ranura == null) {
       await _mostrarAviso(
@@ -397,13 +404,49 @@ class AgendarCitaViewState extends State<AgendarCitaView> {
     });
 
     try {
+      if (!await _contextoVigente()) return;
       final perfil = await _paciente.obtenerMiPerfil();
+      if (!mounted) return;
+
+      if (widget.revalidarAlConfirmar) {
+        final actual = await _agenda.obtenerDisponibilidad(
+          oftalmologoId: oftalmologo.id,
+          fecha: fechaSeleccionada,
+        );
+        if (!mounted) return;
+        final ranuras = generarRanurasDisponibles(actual.intervalosDisponibles);
+        final coincide =
+            actual.oftalmologo.id == oftalmologo.id &&
+            actual.fecha.year == fechaSeleccionada.year &&
+            actual.fecha.month == fechaSeleccionada.month &&
+            actual.fecha.day == fechaSeleccionada.day;
+        if (!coincide ||
+            !ranuras.any(
+              (r) =>
+                  r.horaInicio == ranura.horaInicio &&
+                  r.horaFin == ranura.horaFin,
+            )) {
+          setState(() {
+            _creando = false;
+            _ranura = null;
+            _disponibilidad = actual;
+            _ranuras = coincide ? ranuras : const <RanuraDisponible>[];
+          });
+          await _mostrarAviso(
+            'El horario seleccionado ya no está disponible. '
+            'Revisa la disponibilidad actual antes de confirmar.',
+          );
+          return;
+        }
+      }
+      // El contexto puede haber cambiado durante perfil/disponibilidad.
+      if (!await _contextoVigente() || !mounted) return;
 
       final Cita cita = await _agenda.crearCita(
         CitaCreate(
           pacienteId: perfil.id,
           oftalmologoId: oftalmologo.id,
-          fecha: _fecha,
+          fecha: fechaSeleccionada,
           horaInicio: ranura.horaInicio,
           motivo: _motivoCtrl.text,
           observaciones: _observacionesCtrl.text,
@@ -474,6 +517,24 @@ class AgendarCitaViewState extends State<AgendarCitaView> {
       });
       await _mostrarAviso('Ocurrió un error inesperado. Inténtalo de nuevo.');
     }
+  }
+
+  Future<bool> _contextoVigente() async {
+    final validar = widget.validarContexto;
+    if (validar == null) return mounted;
+    final vigente = await validar();
+    if (!mounted) return false;
+    if (!vigente) {
+      setState(() {
+        _creando = false;
+        _ranura = null;
+      });
+      await _mostrarAviso(
+        'La propuesta ya no está vigente. '
+        'Vuelve al asistente y solicita una nueva antes de agendar.',
+      );
+    }
+    return vigente;
   }
 
   // ---------------------------------------------------------------

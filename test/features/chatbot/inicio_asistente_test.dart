@@ -8,6 +8,7 @@ import 'package:http/testing.dart';
 
 import 'package:clinica_oftalmologica_mobile/core/session/sesion_clinica.dart';
 import 'package:clinica_oftalmologica_mobile/features/chatbot/pages/chatbot_page.dart';
+import 'package:clinica_oftalmologica_mobile/features/citas/pages/citas_page.dart';
 import 'package:clinica_oftalmologica_mobile/features/home/pages/inicio_page.dart';
 import 'package:clinica_oftalmologica_mobile/features/home/pages/main_navigation_page.dart';
 import 'package:clinica_oftalmologica_mobile/features/pagos/services/pagos_service.dart';
@@ -187,6 +188,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(ChatbotPage), findsOneWidget);
+    final compartido = tester
+        .widget<ChatbotPage>(find.byType(ChatbotPage))
+        .controller!;
     expect(find.byType(NavigationBar), findsNothing);
 
     await tester.tap(find.byKey(const Key('chatbot-volver')));
@@ -194,5 +198,13 @@ void main() {
 
     expect(find.byType(InicioPage), findsOneWidget);
     expect(find.byType(NavigationBar), findsOneWidget);
+    // Una mutación de citas desde otra pestaña debe alcanzar el controlador
+    // compartido, no limitarse al refresco visual de Inicio.
+    final citas = tester.widget<CitasPage>(
+      find.byType(CitasPage, skipOffstage: false),
+    );
+    citas.onCitasCambiadas?.call();
+    await tester.pumpAndSettle();
+    expect(compartido.tarjetasInvalidas, isTrue);
   });
 }

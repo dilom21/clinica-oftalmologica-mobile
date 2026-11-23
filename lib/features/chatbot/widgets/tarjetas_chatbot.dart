@@ -30,7 +30,8 @@ class AccionesTarjetasChatbot {
   final void Function(ProfesionalChat profesional)? onVerDisponibilidad;
   final void Function(TarjetaDisponibilidad disponibilidad, IntervaloChat)?
   onSeleccionarHorario;
-  final void Function(TarjetaPropuestaCita propuesta)? onContinuarAgendamiento;
+  final void Function(String mensajeId, int indiceTarjeta)?
+  onContinuarAgendamiento;
   final void Function(int citaId)? onVerCita;
   final void Function(TarjetaNavegacion navegacion)? onNavegar;
 
@@ -46,14 +47,20 @@ class TarjetasChatbot extends StatelessWidget {
     required this.tarjetas,
     required this.acciones,
     this.vigente = true,
+    this.mensajeId = '',
+    this.propuestaVigente,
+    this.accionesHabilitadas = true,
   });
 
   final List<TarjetaChatbot> tarjetas;
   final AccionesTarjetasChatbot acciones;
 
-  /// Solo la última respuesta puede ofrecer acciones de disponibilidad o
-  /// propuesta. Las tarjetas históricas se muestran como referencia.
+  /// Disponibilidad de la última respuesta. Las propuestas usan su propia
+  /// identidad/vigencia, independiente de la posición del mensaje.
   final bool vigente;
+  final String mensajeId;
+  final bool Function(int indice)? propuestaVigente;
+  final bool accionesHabilitadas;
 
   @override
   Widget build(BuildContext context) {
@@ -62,7 +69,7 @@ class TarjetasChatbot extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        for (final TarjetaChatbot tarjeta in tarjetas)
+        for (final (indice, tarjeta) in tarjetas.indexed)
           Padding(
             padding: const EdgeInsets.only(top: 8),
             child: switch (tarjeta) {
@@ -82,7 +89,10 @@ class TarjetasChatbot extends StatelessWidget {
               TarjetaPropuestaCita() => _TarjetaPropuesta(
                 tarjeta: tarjeta,
                 acciones: acciones,
-                vigente: vigente,
+                vigente: propuestaVigente?.call(indice) ?? vigente,
+                habilitada: accionesHabilitadas,
+                mensajeId: mensajeId,
+                indice: indice,
               ),
               TarjetaCitasPropias() => _TarjetaCitasPropias(
                 tarjeta: tarjeta,

@@ -311,7 +311,9 @@ muestra “Profesional asignado”).
    disponibles.
 7. El paciente revisa, completa motivo/observaciones y confirma.
 8. `paciente_id` se resuelve desde `GET /pacientes/me`.
-9. Se registra mediante `POST /agenda-citas/citas` del flujo existente.
+9. En CU41 se vuelve a consultar disponibilidad justo antes de registrar y se
+   comprueba otra vez el contexto de la propuesta tras los awaits. Solo entonces
+   se registra mediante `POST /agenda-citas/citas` del flujo existente.
 10. No se envía `servicio_id`. No se registra nada al recibir la propuesta.
 11. El botón se bloquea durante el registro y se mantienen las protecciones
     existentes ante doble pulsación y timeout incierto.
@@ -319,6 +321,63 @@ muestra “Profesional asignado”).
 Tras registrar, reprogramar o cancelar una cita, `ChatbotController.invalidarTarjetas()`
 marca propuestas/disponibilidad anteriores como históricas y agrega un aviso
 local. No se presenta una propuesta antigua como vigente.
+
+### Vigencia de propuestas independiente del historial
+
+La causa del fallo tras «Okay muchas gracias» era doble: `ChatConversacion`
+permitía acciones solo en el último mensaje del asistente y el controlador
+restablecía el indicador global de tarjetas tras cualquier respuesta correcta.
+Ninguna de esas condiciones describe la vigencia de una propuesta.
+
+Ahora el controlador mantiene **una única tarjeta pendiente**, referenciada por
+el ID local de su mensaje y su índice en `tarjetas`. No se inventa un ID de
+propuesta del Backend. Una propuesta nueva sustituye la anterior, aunque tenga
+los mismos datos; dos opciones simultáneas no inventan una selección única.
+Una tarjeta retirada nunca se recupera buscando hacia atrás en el historial.
+
+El contrato actual solo incluye el sobre textual y las tarjetas; no comunica
+si un turno cambió el contexto de agendamiento. La política local es conservadora:
+
+- Se conserva la propuesta ante cortesías **completas y acotadas del paciente**
+  como «Okay muchas gracias», «Perfecto, gracias» o «Entendido». No se compara ni
+  clasifica el texto generado por DeepSeek para decidir vigencia.
+- Cualquier otro mensaje aceptado retira la selección antes de consultar al
+  Backend, incluso si falla la petición o la respuesta no trae tarjetas. Una
+  mezcla como «gracias, pero cambia al 28» no es una cortesía pura.
+- Los datos estructurados incompatibles, una cita real coincidente, una mutación
+  de citas, cambio/cierre de sesión, cambio de conversación, TTL o inicio de la
+  cita ya pasado la invalidan. Una respuesta anterior a una mutación de citas
+  no puede instalar una propuesta basada en esa instantánea obsoleta.
+- Enviar una cortesía suspende el botón temporalmente, sin marcar la propuesta
+  como histórica. Un resultado de red incierto sí retira la propuesta.
+
+Esta política favorece seguridad sobre comodidad: un mensaje inocuo que no sea
+una cortesía reconocida puede requerir pedir una propuesta nueva. Para ampliar
+el comportamiento de forma fiable, el **cambio mínimo de contrato propuesto** es
+un efecto estructurado por turno (`efecto_propuesta: conservar | invalidar`),
+producido por el estado/las herramientas del Backend, no por comparación del
+texto del LLM. Una nueva `propuesta_cita` ya comunica la sustitución; no hace
+falta inventar identificadores. Este campo es una propuesta de evolución:
+**no se supone recibido ni se implementa ningún cambio del Backend**.
+
+Antes de navegar se revalida la sesión/TTL y la identidad exacta de la tarjeta.
+Se verifican ID positivo, fecha calendario válida, horas válidas y ordenadas,
+y que siga siendo una propuesta no reservada que exige confirmación. El botón
+abre `ChatAgendamientoPage` con `PreseleccionCita`; no reserva nada. La guarda
+se conserva en el formulario para impedir confirmar si entretanto cambió la
+conversación/propuesta. Las comprobaciones adicionales de CU41 son optativas en
+`AgendarCitaView`: no se altera el comportamiento de otros accesos al CU10.
+
+La disponibilidad se consulta al abrir el formulario y nuevamente al confirmar.
+Si el turno ya no figura, no se hace POST. La operación de creación del Backend
+sigue siendo la autoridad final ante una ocupación concurrente (409 sin
+reintento automático). Volver/cancelar el formulario no crea una cita.
+
+Las pruebas cubren la propuesta del 27/11/2026, 14:00–14:30, la cortesía posterior,
+sustituciones, cambios de contexto sin tarjetas, invalidaciones y la navegación
+real con preselección, cancelación y validación fresca. Esta mejora de vigencia
+**requiere todavía validación física en el Redmi**. STT, TTS y la lógica social
+del Backend no se modifican.
 
 ### CU38
 

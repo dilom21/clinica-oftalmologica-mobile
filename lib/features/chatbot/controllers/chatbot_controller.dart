@@ -50,6 +50,10 @@ class ChatbotController extends ChangeNotifier {
   bool _desechado = false;
   int _generacion = 0;
   int _secuenciaMensaje = 0;
+  String? _mensajePropuesta;
+  int? _indicePropuesta;
+  TarjetaPropuestaCita? _propuesta;
+  int _revisionCitas = 0;
 
   String? _errorGeneral;
   String? _aviso;
@@ -100,6 +104,117 @@ class ChatbotController extends ChangeNotifier {
   bool get expirada {
     final DateTime? expira = _expiraEn;
     return expira != null && !_ahora().isBefore(expira);
+  }
+
+  /// Identidad LOCAL de la tarjeta recibida, no un ID de propuesta del Backend.
+  /// No se busca retrospectivamente otra tarjeta si esta deja de ser vigente.
+  bool propuestaVigente(String mensajeId, int indice) =>
+      !_desechado &&
+      _conversacionId != null &&
+      !expirada &&
+      mensajeId == _mensajePropuesta &&
+      indice == _indicePropuesta &&
+      _propuesta != null &&
+      _propuesta!.datosValidos &&
+      _propuesta!.inicioLocal!.isAfter(_ahora());
+
+  Future<TarjetaPropuestaCita?> prepararPropuesta(
+    String mensajeId,
+    int indice,
+  ) async {
+    if (_enviando || !propuestaVigente(mensajeId, indice)) return null;
+    await _verificarSesion();
+    if (_desechado) return null;
+    verificarExpiracion();
+    if (_enviando || !propuestaVigente(mensajeId, indice)) return null;
+    return _propuesta;
+  }
+
+  void _retirarPropuesta() {
+    _mensajePropuesta = null;
+    _indicePropuesta = null;
+    _propuesta = null;
+  }
+
+  // El contrato no informa intención/contexto de propuesta. Solo estas
+  // cortesías completas preservan estado sin inferir intención del texto IA.
+  // Cualquier contenido adicional (incluidos números/negaciones) lo retira.
+  bool _esCortesiaSinCambios(String texto) {
+    final normalizado = texto
+        .toLowerCase()
+        .trim()
+        .replaceAll('á', 'a')
+        .replaceAll('é', 'e')
+        .replaceAll('í', 'i')
+        .replaceAll('ó', 'o')
+        .replaceAll('ú', 'u')
+        .replaceAll(RegExp(r'[.,;:!?¡¿]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    const expresion =
+        r'(?:ok(?:ay)?|muchas gracias|muchisimas gracias|gracias|perfecto|entendido|de acuerdo|muy amable|genial|excelente|vale)';
+    return RegExp('^$expresion(?: $expresion)*\$').hasMatch(normalizado);
+  }
+
+  void _actualizarPropuesta(MensajeChat mensaje) {
+    final propuestas = mensaje.tarjetas
+        .whereType<TarjetaPropuestaCita>()
+        .toList();
+    if (propuestas.isNotEmpty) {
+      _retirarPropuesta();
+      // Más de una opción no implica una selección única del paciente.
+      if (propuestas.length == 1 &&
+          propuestas.single.datosValidos &&
+          propuestas.single.inicioLocal!.isAfter(_ahora())) {
+        _mensajePropuesta = mensaje.id;
+        _indicePropuesta = mensaje.tarjetas.indexOf(propuestas.single);
+        _propuesta = propuestas.single;
+      }
+    }
+    final propuesta = _propuesta;
+    if (propuesta == null) return;
+    // Incluso una cortesía no prevalece sobre datos estructurados incompatibles.
+    for (final tarjeta in mensaje.tarjetas) {
+      if (tarjeta is TarjetaDisponibilidad) {
+        final dia = tarjeta.fecha;
+        final inicio = segundosHoraChat(propuesta.horaInicio)!;
+        final fin = segundosHoraChat(propuesta.horaFin)!;
+        final compatible =
+            tarjeta.oftalmologoId == propuesta.oftalmologoId &&
+            dia != null &&
+            dia.year == propuesta.fecha!.year &&
+            dia.month == propuesta.fecha!.month &&
+            dia.day == propuesta.fecha!.day &&
+            tarjeta.intervalos.any(
+              (intervalo) =>
+                  (segundosHoraChat(intervalo.horaInicio) ?? 86400) <= inicio &&
+                  (segundosHoraChat(intervalo.horaFin) ?? -1) >= fin,
+            );
+        if (!compatible) _retirarPropuesta();
+      }
+      if (tarjeta is TarjetaCitasPropias &&
+          tarjeta.citas.any(
+            (cita) =>
+                cita.oftalmologoId == propuesta.oftalmologoId &&
+                cita.fecha == propuesta.fecha &&
+                segundosHoraChat(cita.horaInicio) ==
+                    segundosHoraChat(propuesta.horaInicio) &&
+                cita.estado != 'CANCELADA',
+          )) {
+        _retirarPropuesta();
+      }
+      if (tarjeta is TarjetaDesconocida ||
+          (tarjeta is TarjetaProfesionales &&
+              !tarjeta.profesionales.any(
+                (p) => p.id == propuesta.oftalmologoId,
+              ))) {
+        _retirarPropuesta();
+      }
+    }
+    if (mensaje.tipo == TipoRespuestaChatbot.privacidad ||
+        mensaje.tipo == TipoRespuestaChatbot.desconocido) {
+      _retirarPropuesta();
+    }
   }
 
   // -------------------------------------------------------------------
@@ -182,6 +297,8 @@ class ChatbotController extends ChangeNotifier {
   /// Se usa tras registrar, reprogramar o cancelar una cita real. Opcionalmente
   /// agrega un aviso local (nunca una respuesta simulada de la IA).
   void invalidarTarjetas({String? evento}) {
+    ++_revisionCitas;
+    _retirarPropuesta();
     _tarjetasInvalidas = true;
     if (evento != null && evento.trim().isNotEmpty) {
       _agregarSistema(evento.trim());
@@ -225,6 +342,9 @@ class ChatbotController extends ChangeNotifier {
 
     if (_desechado) return null;
 
+    // Suspender no basta: una intención nueva no puede reutilizar el contexto
+    // anterior aunque falle la petición o la respuesta no contenga tarjetas.
+    if (!_esCortesiaSinCambios(limpio)) _retirarPropuesta();
     _quitarErroresLocales();
     _errorGeneral = null;
     _aviso = null;
@@ -245,6 +365,7 @@ class ChatbotController extends ChangeNotifier {
     _notificar();
 
     final int generacionEnvio = _generacion;
+    final int revisionCitasEnvio = _revisionCitas;
 
     try {
       final bool lista = await _asegurarConversacion(limpio, modalidad);
@@ -259,6 +380,7 @@ class ChatbotController extends ChangeNotifier {
       if (generacionEnvio != _generacion) return null;
 
       final String? huellaActual = await _huellaActual();
+      if (generacionEnvio != _generacion || _desechado) return null;
       if (huellaActual != _huellaSesion) {
         _limpiarPorSesion();
         return null;
@@ -295,6 +417,7 @@ class ChatbotController extends ChangeNotifier {
         textoVoz: respuesta.textoVoz,
       );
       _mensajes.add(mensaje);
+      if (revisionCitasEnvio == _revisionCitas) _actualizarPropuesta(mensaje);
       return mensaje;
     } on ChatbotException catch (error) {
       if (generacionEnvio != _generacion || _desechado) return null;
@@ -379,6 +502,7 @@ class ChatbotController extends ChangeNotifier {
     ModalidadChat modalidad,
   ) async {
     _errorGeneral = error.message;
+    if (error.resultadoIncierto || error.respuestaInvalida) _retirarPropuesta();
     _ultimoRetryAfter = error.retryAfter;
 
     if (error.sesionCambiada) {
@@ -396,6 +520,7 @@ class ChatbotController extends ChangeNotifier {
     }
 
     if (error.statusCode == 404) {
+      _retirarPropuesta();
       // El UUID ya no es utilizable. El historial visible se conserva y el
       // siguiente envío crea una conversación nueva; no se afirma que expiró.
       _conversacionId = null;
@@ -462,6 +587,7 @@ class ChatbotController extends ChangeNotifier {
   }
 
   void _limpiarEstado({required bool mantenerAviso}) {
+    _retirarPropuesta();
     _conversacionId = null;
     _expiraEn = null;
     _expiraEnSegundos = 0;
@@ -517,6 +643,7 @@ class ChatbotController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _retirarPropuesta();
     _desechado = true;
     _generacion++;
     _mensajes.clear();
