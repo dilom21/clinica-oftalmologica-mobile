@@ -156,7 +156,7 @@ void main() {
     expect(find.byKey(const Key('inicio-asistente')), findsOneWidget);
   });
 
-  testWidgets('desde la barra inferior se abre el chat sin quinta pestaña', (
+  testWidgets('desde la barra inferior se abre el chat sin convertirlo en pestaña', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(1000, 2400);
@@ -178,7 +178,18 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.byType(NavigationDestination), findsNWidgets(4));
+    expect(find.byType(NavigationDestination), findsNWidgets(5));
+    final etiquetas = tester
+        .widgetList<NavigationDestination>(
+          find.byType(NavigationDestination),
+        )
+        .map((destino) => destino.label)
+        .toSet();
+    expect(
+      etiquetas,
+      containsAll(<String>['Inicio', 'Citas', 'Pagos', 'Avisos', 'Perfil']),
+    );
+    expect(etiquetas, isNot(contains('Asistente')));
 
     await tester.ensureVisible(
       find.byKey(const Key('inicio-asistente-conversar')),
