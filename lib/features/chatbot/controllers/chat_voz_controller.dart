@@ -14,6 +14,7 @@ enum EstadoVoz {
   inactivo,
   solicitandoPermiso,
   escuchando,
+  revisandoTranscripcion,
   procesando,
   respondiendo,
   pausado,
@@ -30,8 +31,8 @@ enum EstadoVoz {
 /// Garantías:
 /// - STT y TTS nunca están activos a la vez: antes de hablar se detiene el
 ///   micrófono y antes de escuchar se detiene la síntesis.
-/// - Solo se envían resultados FINALES; los parciales únicamente actualizan la
-///   transcripción visual.
+/// - Solo se envían finales/recuperaciones fiables o texto confirmado
+///   explícitamente por el usuario; nunca un parcial incierto sin revisión.
 /// - Cada turno tiene un identificador; los callbacks tardíos se descartan.
 /// - Tras silencios/errores repetidos se pausa en lugar de entrar en un bucle.
 /// - Al volver del segundo plano NO se reactiva el micrófono automáticamente.
@@ -85,6 +86,8 @@ class ChatVozController extends ChangeNotifier {
   int _generacionConversacion = 0;
 
   String _transcripcion = '';
+  String? _transcripcionPendiente;
+  bool _revisionLista = false;
   String _subtitulo = '';
   String? _aviso;
   String? _mensajeError;
@@ -101,6 +104,18 @@ class ChatVozController extends ChangeNotifier {
   bool get activa => _activa;
   bool get pausado => _estado == EstadoVoz.pausado;
   String get transcripcion => _transcripcion;
+  String? get transcripcionPendiente =>
+      _estado == EstadoVoz.revisandoTranscripcion
+      ? _transcripcionPendiente
+      : null;
+  int get revisionTranscripcion => _secuencia;
+  bool get puedeConfirmarTranscripcion =>
+      _estado == EstadoVoz.revisandoTranscripcion &&
+      _revisionLista &&
+      !_desechado &&
+      _activa &&
+      _visible &&
+      _primerPlano;
   String get subtitulo => _subtitulo;
   String? get aviso => _aviso;
   String? get mensajeError => _mensajeError;
@@ -123,6 +138,7 @@ class ChatVozController extends ChangeNotifier {
       _respuestaActual != null &&
       (!respuestaPrivada || _sintesis.procesamientoLocalVerificado) &&
       _estado != EstadoVoz.respondiendo &&
+      _estado != EstadoVoz.revisandoTranscripcion &&
       _estado != EstadoVoz.procesando;
 
   set reproduccionAutomatica(bool valor) {
@@ -136,6 +152,7 @@ class ChatVozController extends ChangeNotifier {
     EstadoVoz.inactivo => 'Listo para conversar',
     EstadoVoz.solicitandoPermiso => 'Preparando el micrófono',
     EstadoVoz.escuchando => 'Te escucho...',
+    EstadoVoz.revisandoTranscripcion => 'Revisa lo que entendí',
     EstadoVoz.procesando => 'Consultando información...',
     EstadoVoz.respondiendo => 'El asistente está hablando',
     EstadoVoz.pausado => 'Conversación en pausa',
@@ -157,6 +174,9 @@ class ChatVozController extends ChangeNotifier {
             : 'Estoy escuchando tu mensaje.';
       case EstadoVoz.procesando:
         return 'Estamos preparando la respuesta. No hace falta que repitas.';
+      case EstadoVoz.revisandoTranscripcion:
+        return 'No se envió al asistente. Revisa y completa nombres, fechas u '
+            'otros datos antes de confirmar, o repite la intervención.';
       case EstadoVoz.respondiendo:
         return 'Puedes detener la respuesta con el control de audio.';
       case EstadoVoz.pausado:
@@ -177,7 +197,11 @@ class ChatVozController extends ChangeNotifier {
 
   /// Debe llamarse SOLO después del consentimiento informado de la interfaz.
   Future<void> activar() async {
-    if (_activando || _desechado) return;
+    if (_activando ||
+        _desechado ||
+        _estado == EstadoVoz.revisandoTranscripcion) {
+      return;
+    }
     _activando = true;
     try {
       await _activarInterno();
@@ -378,6 +402,10 @@ class ChatVozController extends ChangeNotifier {
       debugPrint('[CU41Voice][Controller] final received turn=$turno');
     }
 
+    await _enviarTranscripcion(texto, turno);
+  }
+
+  Future<void> _enviarTranscripcion(String texto, int turno) async {
     final String limpio = texto.trim();
     if (limpio.isEmpty) {
       _alSilencio(turno);
@@ -395,7 +423,21 @@ class ChatVozController extends ChangeNotifier {
     _notificar();
 
     // El micrófono queda cerrado antes de cualquier reproducción.
-    await _reconocimiento.detener();
+    try {
+      await _reconocimiento.detener().timeout(const Duration(seconds: 3));
+      if (!_reconocimiento.cierreConfirmado) {
+        throw StateError('stt_close_not_confirmed');
+      }
+    } catch (_) {
+      if (_desechado || turno != _secuencia) return;
+      _pausadoUsuario = true;
+      _estado = EstadoVoz.pausado;
+      _aviso =
+          'No se confirmó el cierre del micrófono. No se envió el mensaje. '
+          'Pulsa continuar para repetir.';
+      _notificar();
+      return;
+    }
     if (_desechado ||
         !_activa ||
         !_visible ||
@@ -408,7 +450,7 @@ class ChatVozController extends ChangeNotifier {
     final int generacion = _conversacion.generacion;
     if (kDebugMode) {
       debugPrint(
-        '[CU41Voice][Controller] sending final turn=$turno modality=voice',
+        '[CU41Voice][Controller] sending approved turn=$turno modality=voice',
       );
     }
     final MensajeChat? respuesta = await _conversacion.enviar(
@@ -497,6 +539,7 @@ class ChatVozController extends ChangeNotifier {
   Future<void> escucharRespuesta() async {
     final RespuestaChatbot? respuesta = _respuestaActual;
     if (respuesta == null ||
+        _estado == EstadoVoz.revisandoTranscripcion ||
         _desechado ||
         _preparandoTts ||
         (_estado == EstadoVoz.respondiendo && _sintesis.hablando)) {
@@ -660,6 +703,11 @@ class ChatVozController extends ChangeNotifier {
   Future<void> _falloStt(String error) async {
     if (!_activa || _desechado) return;
 
+    if (error == 'intervencion_sin_final' && _transcripcion.trim().isNotEmpty) {
+      await _prepararRevision();
+      return;
+    }
+
     _erroresStt++;
     _estado = EstadoVoz.error;
 
@@ -728,12 +776,12 @@ class ChatVozController extends ChangeNotifier {
   }
 
   void _alErrorStt(String error, int turno) {
-    if (turno != _secuencia || !_activa || _desechado) return;
+    if (!_turnoVigente(turno) || _desechado) return;
     unawaited(_falloStt(error));
   }
 
   void _alSilencio(int turno) {
-    if (turno != _secuencia || !_activa || _desechado) return;
+    if (!_turnoVigente(turno) || _desechado) return;
 
     _silencios++;
     if (_silencios >= _maxSilencios) {
@@ -768,6 +816,7 @@ class ChatVozController extends ChangeNotifier {
   /// Pausa micrófono y reproducción. La conversación se conserva.
   Future<void> pausar() async {
     if (_desechado) return;
+    _descartarRevision();
     _pausadoUsuario = true;
     _activa = true;
     _secuencia++;
@@ -782,7 +831,12 @@ class ChatVozController extends ChangeNotifier {
 
   /// Retoma la conversación por voz desde una pausa.
   Future<void> reanudar() async {
-    if (_desechado) return;
+    if (_desechado ||
+        !_primerPlano ||
+        _estado == EstadoVoz.revisandoTranscripcion) {
+      return;
+    }
+    _descartarRevision();
     _activa = true;
     _visible = true;
     _pausadoUsuario = false;
@@ -822,6 +876,7 @@ class ChatVozController extends ChangeNotifier {
   /// Sale de la modalidad de voz conservando la conversación.
   Future<void> salir() async {
     if (_desechado) return;
+    _descartarRevision();
     _activa = false;
     _pausadoUsuario = false;
     _secuencia++;
@@ -838,6 +893,7 @@ class ChatVozController extends ChangeNotifier {
   /// Finaliza por completo la conversación (`DELETE`).
   Future<void> finalizarConversacion() async {
     if (_desechado) return;
+    _descartarRevision();
     _activa = false;
     _pausadoUsuario = false;
     _secuencia++;
@@ -855,6 +911,7 @@ class ChatVozController extends ChangeNotifier {
   /// La app pasó a segundo plano / perdió foco.
   Future<void> suspenderPorCicloDeVida() async {
     if (_desechado) return;
+    _descartarRevision();
     _primerPlano = false;
     _pausadoUsuario = true;
     _secuencia++;
@@ -887,6 +944,7 @@ class ChatVozController extends ChangeNotifier {
   /// La pantalla de voz dejó de ser visible.
   Future<void> alOcultarPantalla() async {
     if (_desechado) return;
+    _descartarRevision();
     _visible = false;
     _pausadoUsuario = true;
     _secuencia++;
@@ -931,6 +989,7 @@ class ChatVozController extends ChangeNotifier {
         _estado == EstadoVoz.respondiendo;
 
     _generacionConversacion = actual;
+    _descartarRevision();
     _secuencia++;
     _idTts++;
     nivel.value = 0;
@@ -954,8 +1013,64 @@ class ChatVozController extends ChangeNotifier {
     if (!_desechado) notifyListeners();
   }
 
+  Future<void> _prepararRevision() async {
+    final revision = ++_secuencia;
+    ++_idTts;
+    _transcripcionPendiente = _transcripcion.trim();
+    _revisionLista = false;
+    _pausadoUsuario = true;
+    _estado = EstadoVoz.revisandoTranscripcion;
+    nivel.value = 0;
+    _notificar();
+    try {
+      await _reconocimiento.cancelar().timeout(const Duration(seconds: 3));
+      if (_desechado || revision != _secuencia) return;
+      _revisionLista = _reconocimiento.cierreConfirmado;
+      if (!_revisionLista) throw StateError('stt_close_not_confirmed');
+    } catch (_) {
+      if (_desechado || revision != _secuencia) return;
+      _descartarRevision();
+      _estado = EstadoVoz.pausado;
+      _aviso =
+          'No se confirmó el cierre del micrófono. No se envió el mensaje. '
+          'Pulsa continuar para repetir.';
+    }
+    if (!_desechado && revision == _secuencia) _notificar();
+  }
+
+  /// La revisión identifica el turno que originó el editor. Una acción tardía
+  /// de un editor anterior no puede aprobar un texto de la sesión siguiente.
+  Future<void> confirmarTranscripcion(
+    String texto, {
+    required int revision,
+  }) async {
+    if (!puedeConfirmarTranscripcion ||
+        revision != _secuencia ||
+        texto.trim().isEmpty) {
+      return;
+    }
+    _descartarRevision();
+    _pausadoUsuario = false;
+    // _enviarTranscripcion consume el turno y cambia a procesando ANTES del await.
+    await _enviarTranscripcion(texto, revision);
+  }
+
+  Future<void> repetirIntervencion({required int revision}) async {
+    if (!puedeConfirmarTranscripcion || revision != _secuencia) return;
+    _descartarRevision();
+    ++_secuencia;
+    _estado = EstadoVoz.pausado;
+    await reanudar();
+  }
+
+  void _descartarRevision() {
+    _transcripcionPendiente = null;
+    _revisionLista = false;
+  }
+
   @override
   void dispose() {
+    _descartarRevision();
     _desechado = true;
     _activa = false;
     _secuencia++;

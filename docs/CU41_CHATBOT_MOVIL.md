@@ -354,8 +354,9 @@ TTS(texto_voz) -> finalización REAL de TTS -> volver a escuchar
 
 - El mismo UUID se mantiene en todo el ciclo.
 - STT y TTS nunca están activos a la vez.
-- Solo los resultados **finales** de STT generan una solicitud; los parciales
-  solo actualizan la transcripción.
+- Se envían automáticamente finales nativos o parciales recuperables según la
+  evidencia acústica existente. Los parciales inciertos requieren confirmación
+  explícita; editar o mostrar su transcripción no envía una solicitud.
 - Cada turno tiene identificador; callbacks de turnos anteriores se descartan.
 - Tras 2 silencios o 2 errores consecutivos se pausa y se pide acción del
   paciente; no hay bucle infinito.
@@ -518,7 +519,47 @@ con el commit `4b942369` (esperado un final, recibido cero) y comprueba 21 apert
 con el coordinador. Incluye recuperación de parciales, errores, final después
 de done, exclusión de pantallas, liberación/stop pendientes, consentimiento,
 pausa/finalización/segundo plano durante operaciones y tres turnos con TTS/UUID.
-La validación física de esta corrección en Redmi sigue pendiente.
+La prueba física reportada por el usuario del 23/11/2026 confirma el despacho
+del coordinador en Redmi Note 9 Pro: estados del adaptador activo, recuperación,
+envío, TTS, reactivación automática, varios turnos y reaperturas.
+
+### Revisión de transcripciones inciertas
+
+En esa prueba persistió otro caso: parciales entre 16:50:34–37, `notListening`
+a las 16:50:41 y ausencia de final a las 16:50:43. La última hipótesis contenía
+una fecha incompleta y no superaba la evidencia exigida para recuperación.
+
+Ahora `intervencion_sin_final` con texto visual no vacío abre
+`revisandoTranscripcion` dentro de la pantalla de voz. El paciente puede editar,
+confirmar el texto exacto o repetir. No se completan ni deducen fechas, nombres
+ni otros datos. Estabilidad/corroboración/confianza son evidencia **acústica**,
+no una prueba de completitud semántica; se mantienen los umbrales y el envío
+automático que ya funcionaban, sin añadir heurísticas lingüísticas.
+
+El editor permanece deshabilitado hasta cancelar STT y comprobar el cierre
+nativo. `cierreConfirmado` consulta el estado nativo y el bloqueo de cierre ya
+existente: no basta `escuchando=false`, que también puede significar que el
+adaptador dejó de ser propietario. El coordinador no cambia. La confirmación
+consume el turno antes del primer await, vuelve a esperar el cierre y usa la
+misma ruta de envío/TTS, modalidad voz y UUID. No hay otra sesión conversacional.
+Repetir vuelve al flujo de escucha y consentimiento existente, sin enviar texto.
+
+Cada editor está identificado por la generación de revisión. Pausar, salir,
+ocultar la pantalla, segundo plano, finalizar o cambiar la conversación invalidan
+la revisión. Al volver hay que repetir; una acción de un editor antiguo no puede
+confirmar otro turno. El silencio mantiene sus reintentos/pausa sin editor vacío.
+El editor es local al widget y se libera al desaparecer; no hay nuevo
+almacenamiento de transcripciones ni cambios al chatbot escrito.
+
+Las trazas sanitizadas de rechazo incluyen estabilidad, corroboración,
+disponibilidad de confianza, bandas relativas a 0.8/0.85, permiso de recuperación,
+notificación/confirmación de cierre y estado nativo. No incluyen palabras,
+nombres, fechas, UUID ni puntuaciones ligadas a palabras.
+
+Las pruebas reproducen la secuencia del Redmi sin final y comprueban edición,
+confirmación, repetición, duplicados, UUID, callbacks antiguos, cierre pendiente
+o fallido, cambio de conversación y ciclo de vida. La mejora de revisión manual
+**todavía requiere validación física en el Redmi**.
 
 ### Esfera
 

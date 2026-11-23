@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
@@ -8,6 +9,7 @@ import 'package:speech_to_text/speech_to_text.dart';
 import 'package:clinica_oftalmologica_mobile/features/chatbot/controllers/chat_voz_controller.dart';
 import 'package:clinica_oftalmologica_mobile/features/chatbot/controllers/chatbot_controller.dart';
 import 'package:clinica_oftalmologica_mobile/features/chatbot/models/chatbot_models.dart';
+import 'package:clinica_oftalmologica_mobile/features/chatbot/pages/chat_voz_page.dart';
 import 'package:clinica_oftalmologica_mobile/features/chatbot/services/voz/reconocimiento_voz.dart';
 
 import 'soporte_chatbot.dart';
@@ -27,6 +29,7 @@ class _Speech extends SpeechToText {
   Completer<void>? inicializacionPendiente;
   Completer<void>? inicioPendiente;
   Completer<void>? cancelacionPendiente;
+  bool cancelacionFalla = false;
   Completer<void>? paradaPendiente;
   final resultados = <SpeechResultListener>[];
   final opciones = <SpeechListenOptions>[];
@@ -113,6 +116,7 @@ class _Speech extends SpeechToText {
   @override
   Future<void> cancel() async {
     if (cancelacionPendiente != null) await cancelacionPendiente!.future;
+    if (cancelacionFalla) throw StateError('native_cancel_failed');
     status('notListening');
     status('done');
     activo = false;
@@ -176,6 +180,315 @@ void main() {
   const pregunta = '¿Qué oftalmólogos atienden en esta clínica?';
   const horarios =
       '¿Qué horarios tiene Salet Ejemplo para el 26 de noviembre de 2026?';
+
+  const incompleta = 'qué horarios tiene Salem ejemplo para el 26';
+  Future<void> reproducirRedmi(WidgetTester tester) async {
+    if (voz.estado != EstadoVoz.escuchando) await voz.activar();
+    // 16:50:34–37: hipótesis sucesivas, no corroboración de la última ni score.
+    for (final parcial in <String>[
+      'qué',
+      'qué horarios',
+      'qué horarios tiene',
+      'qué horarios tiene Salem',
+      'qué horarios tiene Salem ejemplo',
+      incompleta,
+    ]) {
+      speech.emitir(parcial);
+      await tester.pump(const Duration(milliseconds: 600));
+    }
+    await tester.pump(const Duration(milliseconds: 3400)); // 16:50:41
+    speech.status('notListening');
+    speech.status('done');
+    await tester.pump(const Duration(seconds: 2)); // 16:50:43, sin final
+    await tester.pump(const Duration(milliseconds: 500)); // margen de stop
+    await tester.pump();
+  }
+
+  testWidgets(
+    'Redmi: revisar/editar no envía; confirmar conserva UUID y evita duplicados',
+    (tester) async {
+      await voz.activar();
+      speech.emitir(pregunta, final_: true);
+      await tester.pump();
+      tts.terminar();
+      await tester.pump(const Duration(milliseconds: 450));
+      await reproducirRedmi(tester);
+      expect(voz.estado, EstadoVoz.revisandoTranscripcion);
+      expect(voz.transcripcionPendiente, incompleta);
+      expect(voz.puedeConfirmarTranscripcion, isTrue);
+      expect(api.enviarLlamadas, 1);
+      expect(speech.activo, isFalse);
+      final revision = voz.revisionTranscripcion;
+      speech.emitir('resultado tardío', final_: true, sesion: 1);
+      final envio = voz.confirmarTranscripcion(horarios, revision: revision);
+      final duplicado = voz.confirmarTranscripcion(
+        incompleta,
+        revision: revision,
+      );
+      await envio;
+      await duplicado;
+      await tester.pump();
+      expect(api.enviarLlamadas, 2);
+      expect(api.crearLlamadas, 1);
+      expect(
+        conversacion.mensajes
+            .where((m) => m.rol == RolMensajeChat.paciente)
+            .last
+            .texto,
+        horarios,
+      );
+      expect(api.envios.last['conversacion_id'], 'conv-1');
+      expect(api.envios.last['modalidad'], 'voz');
+      expect(tts.sttEscuchandoAlHablar, isFalse);
+      tts.terminar();
+      await tester.pump(const Duration(milliseconds: 450));
+      expect(voz.estado, EstadoVoz.escuchando);
+      await voz.pausar();
+    },
+  );
+
+  testWidgets(
+    'confirmar sin editar envía exactamente lo autorizado, sin completar datos',
+    (tester) async {
+      await reproducirRedmi(tester);
+      final revision = voz.revisionTranscripcion;
+      await voz.confirmarTranscripcion('   ', revision: revision);
+      expect(api.enviarLlamadas, 0);
+      expect(voz.estado, EstadoVoz.revisandoTranscripcion);
+      await voz.confirmarTranscripcion(incompleta, revision: revision);
+      await tester.pump();
+      expect(api.enviarLlamadas, 1);
+      expect(conversacion.mensajes.first.texto, incompleta);
+    },
+  );
+
+  testWidgets(
+    'repetir invalida editor y resultados antiguos sin abrir capturas paralelas',
+    (tester) async {
+      await reproducirRedmi(tester);
+      final revision = voz.revisionTranscripcion;
+      final repetir = voz.repetirIntervencion(revision: revision);
+      final duplicado = voz.repetirIntervencion(revision: revision);
+      await repetir;
+      await duplicado;
+      expect(voz.estado, EstadoVoz.escuchando);
+      expect(speech.resultados, hasLength(2));
+      speech.emitir('callback anterior', final_: true, sesion: 0);
+      await voz.confirmarTranscripcion(incompleta, revision: revision);
+      expect(api.enviarLlamadas, 0);
+      await reproducirRedmi(tester);
+      expect(voz.estado, EstadoVoz.revisandoTranscripcion);
+      await voz.confirmarTranscripcion(incompleta, revision: revision);
+      expect(api.enviarLlamadas, 0); // Tampoco aprueba el siguiente editor.
+      await voz.confirmarTranscripcion(
+        horarios,
+        revision: voz.revisionTranscripcion,
+      );
+      await tester.pump();
+      expect(api.enviarLlamadas, 1);
+    },
+  );
+
+  for (final accion in [
+    'pausa',
+    'segundo plano',
+    'finalizar',
+    'salir',
+    'cambiar',
+  ]) {
+    testWidgets('revisión/edición se invalida al $accion', (tester) async {
+      await reproducirRedmi(tester);
+      final revision = voz.revisionTranscripcion;
+      switch (accion) {
+        case 'pausa':
+          await voz.pausar();
+        case 'segundo plano':
+          await voz.suspenderPorCicloDeVida();
+          voz.reanudarCicloDeVida();
+        case 'finalizar':
+          await voz.finalizarConversacion();
+        case 'salir':
+          await voz.salir();
+        case 'cambiar':
+          await conversacion.nuevaConversacion();
+      }
+      await voz.confirmarTranscripcion(horarios, revision: revision);
+      await voz.repetirIntervencion(revision: revision);
+      speech.emitir(horarios, final_: true, sesion: 0);
+      await tester.pump();
+      expect(api.enviarLlamadas, 0);
+      expect(voz.transcripcionPendiente, isNull);
+      expect(speech.resultados, hasLength(1));
+      expect(speech.activo, isFalse);
+    });
+  }
+
+  testWidgets(
+    'cancel pendiente bloquea confirmar/repetir y pausa invalida su continuación',
+    (tester) async {
+      speech.cancelacionPendiente = Completer<void>();
+      await reproducirRedmi(tester);
+      final revision = voz.revisionTranscripcion;
+      expect(voz.puedeConfirmarTranscripcion, isFalse);
+      await voz.confirmarTranscripcion(horarios, revision: revision);
+      await voz.repetirIntervencion(revision: revision);
+      final pausa = voz.pausar();
+      speech.cancelacionPendiente!.complete();
+      await pausa;
+      await tester.pump();
+      expect(voz.estado, EstadoVoz.pausado);
+      expect(api.enviarLlamadas, 0);
+      expect(speech.resultados, hasLength(1));
+    },
+  );
+
+  testWidgets('pausa entre confirmar y cierre impide el envío', (tester) async {
+    await reproducirRedmi(tester);
+    final revision = voz.revisionTranscripcion;
+    final envio = voz.confirmarTranscripcion(horarios, revision: revision);
+    final pausa = voz.pausar();
+    await envio;
+    await pausa;
+    await tester.pump();
+    expect(api.enviarLlamadas, 0);
+  });
+
+  testWidgets(
+    'fallo nativo de cancel no habilita confirmar aunque ya no haya propietario',
+    (tester) async {
+      speech.cancelacionFalla = true;
+      await reproducirRedmi(tester);
+      expect(voz.puedeConfirmarTranscripcion, isFalse);
+      expect(voz.estado, EstadoVoz.pausado);
+      expect(stt.cierreConfirmado, isFalse);
+      await voz.confirmarTranscripcion(
+        horarios,
+        revision: voz.revisionTranscripcion,
+      );
+      expect(api.enviarLlamadas, 0);
+      speech.cancelacionFalla = false;
+    },
+  );
+
+  testWidgets(
+    'diagnóstico de recuperación usa bandas y evidencia, nunca transcripción',
+    (tester) async {
+      final trazas = <String>[];
+      final anterior = debugPrint;
+      debugPrint = (String? mensaje, {int? wrapWidth}) {
+        if (mensaje != null) trazas.add(mensaje);
+      };
+      try {
+        await reproducirRedmi(tester);
+        final rechazo = trazas.singleWhere(
+          (m) => m.contains('recovery rejected'),
+        );
+        expect(rechazo, contains('stable=true'));
+        expect(rechazo, contains('corroborated=false'));
+        expect(rechazo, contains('confidenceAvailable=false'));
+        expect(rechazo, contains('confidenceBand=unavailable'));
+        expect(rechazo, contains('closureConfirmed=true'));
+        expect(trazas.join(), isNot(contains('Salem')));
+        expect(trazas.join(), isNot(contains('para el 26')));
+        expect(trazas.join(), isNot(contains(incompleta)));
+      } finally {
+        debugPrint = anterior;
+      }
+    },
+  );
+
+  testWidgets(
+    'confirmar no detiene la captura de otra pantalla ni envía con STT activo',
+    (tester) async {
+      await reproducirRedmi(tester);
+      final otra = SpeechToTextReconocimiento(
+        speech: speech,
+        solicitarConsentimientoGeneral: () async => true,
+      );
+      expect(
+        await otra.iniciar(
+          onParcial: (_) {},
+          onFinal: (_) {},
+          onError: (_) {},
+          onSilencio: () {},
+        ),
+        isTrue,
+      );
+      await voz.confirmarTranscripcion(
+        horarios,
+        revision: voz.revisionTranscripcion,
+      );
+      expect(api.enviarLlamadas, 0);
+      expect(speech.activo, isTrue);
+      expect(speech.resultados, hasLength(2));
+      await otra.liberar();
+    },
+  );
+
+  for (final accion in ['enviar', 'repetir']) {
+    testWidgets('editor en pantalla permite editar, bloquear vacío y $accion', (
+      tester,
+    ) async {
+      if (accion == 'repetir') {
+        tester.view.physicalSize = const Size(320, 740);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+      }
+      await tester.pumpWidget(
+        MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context).copyWith(
+              textScaler: TextScaler.linear(accion == 'repetir' ? 2 : 1),
+            ),
+            child: child!,
+          ),
+          home: ChatVozPage(
+            conversacion: conversacion,
+            vozController: voz,
+            pedirConsentimiento: false,
+            iniciarAlAbrir: false,
+          ),
+        ),
+      );
+      await tester.pump();
+      await reproducirRedmi(tester);
+      final campo = find.byKey(const ValueKey('revision-transcripcion'));
+      expect(campo, findsOneWidget);
+      expect(tester.widget<TextField>(campo).controller!.text, incompleta);
+      final revision = voz.revisionTranscripcion;
+      await tester.ensureVisible(campo);
+      await tester.enterText(campo, '  ');
+      await tester.pump();
+      final boton = find.widgetWithText(FilledButton, 'Confirmar y enviar');
+      expect(tester.widget<FilledButton>(boton).onPressed, isNull);
+      await tester.enterText(campo, horarios);
+      await tester.pump();
+      speech.emitir('final antiguo', final_: true, sesion: 0);
+      await tester.pump();
+      expect(tester.widget<TextField>(campo).controller!.text, horarios);
+      expect(api.enviarLlamadas, 0);
+      expect(speech.activo, isFalse);
+      final accionUi = find.text(
+        accion == 'enviar' ? 'Confirmar y enviar' : 'Repetir intervención',
+      );
+      await tester.ensureVisible(accionUi);
+      await tester.tap(accionUi);
+      await tester.pump();
+      expect(api.enviarLlamadas, accion == 'enviar' ? 1 : 0);
+      expect(
+        voz.estado,
+        accion == 'enviar' ? EstadoVoz.respondiendo : EstadoVoz.escuchando,
+      );
+      speech.emitir('tardío', final_: true, sesion: 0);
+      await voz.confirmarTranscripcion(incompleta, revision: revision);
+      await tester.pump();
+      expect(api.enviarLlamadas, accion == 'enviar' ? 1 : 0);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   testWidgets(
     'regresión: 21 pantallas nuevas reciben los listeners fijados del plugin',
@@ -485,7 +798,7 @@ void main() {
   );
 
   testWidgets(
-    'un parcial sin confianza ni corroboración solicita repetir, no decide por longitud',
+    'un parcial sin confianza ni corroboración ofrece revisión, no decide por longitud',
     (tester) async {
       await voz.activar();
       speech.emitir(pregunta);
@@ -494,8 +807,8 @@ void main() {
       await tester.pump(const Duration(milliseconds: 500));
       await tester.pump();
       expect(api.enviarLlamadas, 0);
-      expect(voz.estado, EstadoVoz.pausado);
-      expect(voz.aviso, contains('No se envió'));
+      expect(voz.estado, EstadoVoz.revisandoTranscripcion);
+      expect(voz.textoSubtitulo, contains('No se envió'));
       expect(speech.resultados, hasLength(1));
       speech.emitir(pregunta, final_: true);
       await tester.pump();
@@ -525,7 +838,7 @@ void main() {
     await tester.pump(const Duration(seconds: 47));
     await tester.pump(const Duration(milliseconds: 500));
     await tester.pump();
-    expect(voz.estado, EstadoVoz.pausado);
+    expect(voz.estado, EstadoVoz.revisandoTranscripcion);
     expect(api.enviarLlamadas, 0);
     expect(speech.resultados, hasLength(1));
   });
@@ -572,6 +885,7 @@ void main() {
         expect(api.enviarLlamadas, 1);
         expect(conversacion.mensajes.first.texto, pregunta);
         expect(voz.estado, EstadoVoz.respondiendo);
+        expect(voz.transcripcionPendiente, isNull);
         speech.emitir('Final tardío de otra hipótesis', final_: true);
         await tester.pump();
         expect(api.enviarLlamadas, 1);
@@ -603,7 +917,7 @@ void main() {
       await tester.pump(const Duration(seconds: 2));
       await tester.pump(const Duration(milliseconds: 500));
       expect(api.enviarLlamadas, 0);
-      expect(voz.estado, EstadoVoz.pausado);
+      expect(voz.estado, EstadoVoz.revisandoTranscripcion);
     },
   );
 
@@ -632,8 +946,8 @@ void main() {
     await tester.pump(const Duration(seconds: 2));
     await tester.pump(const Duration(milliseconds: 500));
     expect(api.enviarLlamadas, 0);
-    expect(voz.estado, EstadoVoz.pausado);
-    expect(voz.aviso, contains('repite'));
+    expect(voz.estado, EstadoVoz.revisandoTranscripcion);
+    expect(voz.textoSubtitulo, contains('repite'));
   });
 
   testWidgets(
@@ -652,7 +966,7 @@ void main() {
   );
 
   testWidgets(
-    'done con isListening atascado tiene comprobaciones y termina en pausa',
+    'done con isListening atascado tiene comprobaciones y termina en revisión',
     (tester) async {
       await voz.activar();
       speech.emitir(pregunta, confianza: 0.95);
@@ -663,7 +977,7 @@ void main() {
       }
       await tester.pump(const Duration(milliseconds: 500));
       expect(speech.paradas, greaterThan(0));
-      expect(voz.estado, EstadoVoz.pausado);
+      expect(voz.estado, EstadoVoz.revisandoTranscripcion);
       expect(api.enviarLlamadas, 0);
     },
   );
@@ -678,12 +992,12 @@ void main() {
       speech.activo =
           true; // El proveedor contradice la notificación de cierre.
       await tester.pump(const Duration(milliseconds: 500));
-      expect(voz.estado, EstadoVoz.pausado);
+      expect(voz.estado, EstadoVoz.revisandoTranscripcion);
       expect(api.enviarLlamadas, 0);
     },
   );
 
-  testWidgets('stop que no responde tiene timeout y deja pausa explicada', (
+  testWidgets('stop que no responde deja revisión bloqueada hasta el cierre', (
     tester,
   ) async {
     await voz.activar();
@@ -693,8 +1007,8 @@ void main() {
     await tester.pump(const Duration(seconds: 2));
     await tester.pump(const Duration(seconds: 3));
     expect(api.enviarLlamadas, 0);
-    expect(voz.estado, EstadoVoz.pausado);
-    expect(voz.aviso, isNotNull);
+    expect(voz.estado, EstadoVoz.revisandoTranscripcion);
+    expect(voz.puedeConfirmarTranscripcion, isFalse);
     speech.paradaPendiente!.complete();
     await tester.pump();
   });
@@ -708,6 +1022,7 @@ void main() {
         await tester.pump(const Duration(seconds: 2));
         await tester.pump(const Duration(milliseconds: 500));
         await tester.pump();
+        expect(voz.transcripcionPendiente, isNull);
       }
       expect(api.enviarLlamadas, 0);
       expect(voz.estado, EstadoVoz.pausado);

@@ -59,6 +59,10 @@ abstract class ReconocimientoVoz {
 
   bool get escuchando;
 
+  /// Confirmación de cierre nativo, no solo ausencia de propiedad del turno.
+  /// Consultar después de esperar detener/cancelar antes de un envío manual.
+  bool get cierreConfirmado;
+
   /// `true` solo después de verificar soporte local y de que una captura
   /// on-device arrancó correctamente. Nunca se asume por usar un plugin.
   bool get procesamientoLocalVerificado;
@@ -297,6 +301,10 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
 
   @override
   bool get escuchando => _coordinador.pertenece(this) && _speech.isListening;
+
+  @override
+  bool get cierreConfirmado =>
+      !_speech.isListening && !_coordinador._cierreFallido;
 
   @override
   bool get procesamientoLocalVerificado => _localVerificado;
@@ -779,6 +787,30 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
     return _repeticionesParcial >= 2 || _confianzaParcial >= 0.85;
   }
 
+  void _diagnosticarRecuperacion({
+    required bool permitida,
+    required bool cierreConfirmado,
+  }) {
+    // Solo bandas respecto de los umbrales existentes, nunca texto ni score
+    // asociado a palabras. La evidencia acústica no prueba completitud semántica.
+    final confianza = _confianzaParcial <= 0
+        ? 'unavailable'
+        : _confianzaParcial < 0.8
+        ? 'belowFloor'
+        : _confianzaParcial < 0.85
+        ? 'belowStandalone'
+        : 'atOrAboveStandalone';
+    _diagnostico(
+      'partial recovery rejected allowed=$permitida stable=$_parcialEstable '
+      'corroborated=${_repeticionesParcial >= 2} '
+      'confidenceAvailable=${_confianzaParcial > 0} confidenceBand=$confianza '
+      'closureNotified=$_cierreNotificado closureConfirmed=$cierreConfirmado '
+      'nativeListening=${_speech.isListening} '
+      'nonEmpty=${_ultimoParcial.isNotEmpty} '
+      'isolatedFragment=${_esFragmentoInterrogativo(_ultimoParcial)}',
+    );
+  }
+
   void _alEstado(String estado) {
     final seguro = const {'listening', 'notListening', 'done'}.contains(estado)
         ? estado
@@ -858,6 +890,10 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
       }
     } catch (_) {
       if (generacion == _generacionTurno && _turnoActivo) {
+        _diagnosticarRecuperacion(
+          permitida: permitirRecuperacion,
+          cierreConfirmado: false,
+        );
         _cancelarTemporizadores();
         _turnoActivo = false;
         _onError?.call('intervencion_sin_final');
@@ -879,7 +915,11 @@ class SpeechToTextReconocimiento implements ReconocimientoVoz {
       _diagnostico('silence closure turn=$generacion');
       _onSilencio?.call();
     } else {
-      // Hipótesis no corroborada o de confianza baja: pedir repetir, no enviar.
+      _diagnosticarRecuperacion(
+        permitida: permitirRecuperacion,
+        cierreConfirmado: true,
+      );
+      // Hipótesis incierta: el controlador ofrece revisión, nunca envío directo.
       _onError?.call('intervencion_sin_final');
     }
   }

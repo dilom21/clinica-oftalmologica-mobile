@@ -97,6 +97,9 @@ class SttFalso implements ReconocimientoVoz {
   bool get escuchando => _escuchando;
 
   @override
+  bool get cierreConfirmado => !_escuchando;
+
+  @override
   bool get procesamientoLocalVerificado => local && _escuchando;
 
   @override

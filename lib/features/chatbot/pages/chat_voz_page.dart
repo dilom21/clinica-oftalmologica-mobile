@@ -362,6 +362,8 @@ class _ChatVozPageState extends State<ChatVozPage> with WidgetsBindingObserver {
     );
     final List<MensajeChat> mensajes = widget.conversacion.mensajes;
     final MensajeChat? ultimaConTarjetas = _ultimaConTarjetas(mensajes);
+    final pendiente = _voz.transcripcionPendiente;
+    final revision = _voz.revisionTranscripcion;
 
     return Column(
       children: <Widget>[
@@ -416,7 +418,22 @@ class _ChatVozPageState extends State<ChatVozPage> with WidgetsBindingObserver {
                       ],
                     ),
                   ),
-                  if (_voz.transcripcion.isNotEmpty) ...<Widget>[
+                  if (pendiente != null) ...<Widget>[
+                    const SizedBox(height: 14),
+                    _RevisionTranscripcion(
+                      key: ValueKey(revision),
+                      texto: pendiente,
+                      habilitada: _voz.puedeConfirmarTranscripcion,
+                      onConfirmar: (texto) {
+                        FocusScope.of(context).unfocus();
+                        _voz.confirmarTranscripcion(texto, revision: revision);
+                      },
+                      onRepetir: () {
+                        FocusScope.of(context).unfocus();
+                        _voz.repetirIntervencion(revision: revision);
+                      },
+                    ),
+                  ] else if (_voz.transcripcion.isNotEmpty) ...<Widget>[
                     const SizedBox(height: 14),
                     _Transcripcion(texto: _voz.transcripcion),
                   ],
@@ -532,7 +549,8 @@ class _ChatVozPageState extends State<ChatVozPage> with WidgetsBindingObserver {
   Widget _controles() {
     final bool escuchando =
         _voz.estado == EstadoVoz.escuchando ||
-        _voz.estado == EstadoVoz.procesando;
+        _voz.estado == EstadoVoz.procesando ||
+        _voz.estado == EstadoVoz.revisandoTranscripcion;
     final bool respondiendo = _voz.estado == EstadoVoz.respondiendo;
     final bool pausado =
         _voz.estado == EstadoVoz.pausado ||
@@ -713,6 +731,89 @@ class _ControlVoz extends StatelessWidget {
               fontWeight: FontWeight.w600,
               color: activo ? ChatbotColores.vozTextoSuave : Colors.white30,
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RevisionTranscripcion extends StatefulWidget {
+  const _RevisionTranscripcion({
+    super.key,
+    required this.texto,
+    required this.habilitada,
+    required this.onConfirmar,
+    required this.onRepetir,
+  });
+
+  final String texto;
+  final bool habilitada;
+  final ValueChanged<String> onConfirmar;
+  final VoidCallback onRepetir;
+
+  @override
+  State<_RevisionTranscripcion> createState() => _RevisionTranscripcionState();
+}
+
+class _RevisionTranscripcionState extends State<_RevisionTranscripcion> {
+  late final TextEditingController _editor = TextEditingController(
+    text: widget.texto,
+  );
+
+  @override
+  void dispose() {
+    _editor.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: ChatbotColores.nocturnoMedio,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: ChatbotColores.vozTextoSuave),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          TextField(
+            key: const ValueKey('revision-transcripcion'),
+            controller: _editor,
+            enabled: widget.habilitada,
+            minLines: 2,
+            maxLines: 5,
+            maxLength: 1000,
+            autocorrect: false,
+            enableSuggestions: false,
+            enableIMEPersonalizedLearning: false,
+            style: const TextStyle(color: ChatbotColores.vozTexto),
+            decoration: const InputDecoration(
+              labelText: 'Texto reconocido: puedes editarlo',
+              labelStyle: TextStyle(color: ChatbotColores.vozTextoSuave),
+              counterStyle: TextStyle(color: ChatbotColores.vozTextoSuave),
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
+          if (!widget.habilitada)
+            const Text(
+              'Cerrando el micrófono...',
+              style: TextStyle(color: ChatbotColores.vozTextoSuave),
+            ),
+          const SizedBox(height: 8),
+          FilledButton.icon(
+            onPressed: widget.habilitada && _editor.text.trim().isNotEmpty
+                ? () => widget.onConfirmar(_editor.text)
+                : null,
+            icon: const Icon(Icons.send_rounded),
+            label: const Text('Confirmar y enviar'),
+          ),
+          TextButton.icon(
+            onPressed: widget.habilitada ? widget.onRepetir : null,
+            icon: const Icon(Icons.mic_none_rounded),
+            label: const Text('Repetir intervención'),
           ),
         ],
       ),
