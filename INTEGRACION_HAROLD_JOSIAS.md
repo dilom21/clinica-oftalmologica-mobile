@@ -144,3 +144,54 @@ flutter build apk --debug --dart-define=API_URL=http://10.0.2.2:8000
 - Sin upstream remoto; no existe `origin/integracion-harold-josias`.
 - `git status` limpio.
 - Sin push, sin PR y sin cambios en `dev-harold`.
+
+## 11. Validación funcional y preparación física (24/11/2026)
+
+- `flutter pub get`: correcto.
+- `flutter analyze`: **No issues found**.
+- `flutter test`: **497 aprobadas, 4 omitidas, 0 fallos**.
+- APK debug compilada con backend local real:
+  `flutter build apk --debug --dart-define=API_URL=http://127.0.0.1:8000`
+- Ruta: `C:\Users\Harold\Desktop\Clinic-Mobile\clinica-oftalmologica-mobile\build\app\outputs\flutter-apk\app-debug.apk`
+- Tamaño: 214,2 MB (debug).
+- `git diff --check`: correcto.
+
+### Conexión con el Redmi
+
+La APK apunta a `127.0.0.1:8000`. Antes de abrirla, ejecutar en el PC:
+
+```bat
+"%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe" reverse tcp:8000 tcp:8000
+```
+
+Luego iniciar el Backend en `127.0.0.1:8000`. No se instaló ni desinstaló nada en el teléfono.
+
+### Impacto del applicationId
+
+- Anterior: `com.example.clinica_oftalmologica_mobile`.
+- Nuevo: `com.clinicaoftalmologica.mobile`.
+- Android trata un applicationId distinto como **otra aplicación**: la nueva APK no actualiza la anterior; se instala en paralelo y no migra tokens/sesiones de `flutter_secure_storage`.
+- iOS también cambió de `com.example.clinicaOftalmologicaMobile` a `com.clinicaoftalmologica.mobile`.
+- `google-services.json` (Android) y `GoogleService-Info.plist` (iOS) corresponden al paquete nuevo; no se modificó el applicationId porque hacerlo rompería Firebase.
+
+### Firebase y notificaciones
+
+- Configuración cliente Firebase incluida y coherente con el paquete nuevo.
+- Backend: `FCM_PROJECT_ID` y ADC no están configurados; el envío push real no está operativo todavía.
+- Registro de dispositivo, bandeja y preferencias usan JWT tenant de paciente y no dependen del envío FCM.
+- En tests de widgets se registra un aviso capturado de inicialización de notificaciones locales sin plugin nativo; no provoca fallo.
+
+### Compatibilidad revisada
+
+- Push: `/notificaciones*` coincide en rutas y contratos.
+- CU41: `/notificaciones-chatbot/conversaciones` coincide; se conservan campos y tarjetas.
+- Analítica: rutas `/reportes/progresivos/*` e `/ia-predictiva/*` coinciden, pero el backend exige Administrador/permiso “Generar reportes” y la página no está enlazada en la navegación de pacientes.
+- `--dart-define=API_URL` se conserva.
+
+### Pendiente de validación física (no realizada)
+
+- STT/TTS y retorno al micrófono en Redmi Note 9 Pro.
+- Conservación/invalidación de propuesta y navegación al formulario.
+- Permiso Android 13+ de notificaciones y recepción push real.
+- Instalación/actualización de la APK (decisión por applicationId nuevo).
+- Analítica administrativa requiere decisión de producto/rol.
