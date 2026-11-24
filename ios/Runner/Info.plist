@@ -26,6 +26,10 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>El micrófono se usa solo cuando activas el asistente de voz para transcribir tu consulta administrativa en el dispositivo. No dictes contraseñas ni información clínica sensible.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>El reconocimiento de voz permite convertir en texto lo que dices al asistente administrativo. La transcripción se solicita en el dispositivo y no se envía audio al asistente de IA.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/session/sesion_clinica.dart';
+import '../../catalogo/pages/catalogo_page.dart';
+import '../../chatbot/pages/chatbot_page.dart';
+import '../../chatbot/widgets/tarjeta_asistente_inicio.dart';
 import '../../citas/models/agenda_models.dart';
 import '../../citas/models/cita_models.dart';
 import '../../citas/services/agenda_service.dart';
@@ -40,6 +43,9 @@ class InicioPage extends StatefulWidget {
     this.onVerMisCitas,
     this.onVerPagos,
     this.onVerInformacionClinica,
+    this.onVerCatalogo,
+    this.onAbrirChatbot,
+    this.onAbrirChatVoz,
   });
 
   /// Clínica de la sesión activa.
@@ -65,6 +71,13 @@ class InicioPage extends StatefulWidget {
 
   /// Abre la información clínica de la clínica.
   final VoidCallback? onVerInformacionClinica;
+  final VoidCallback? onVerCatalogo;
+
+  /// Abre el asistente virtual en modalidad escrita.
+  final VoidCallback? onAbrirChatbot;
+
+  /// Abre el asistente virtual en modalidad de voz.
+  final VoidCallback? onAbrirChatVoz;
 
   @override
   State<InicioPage> createState() => InicioPageState();
@@ -243,6 +256,11 @@ class InicioPageState extends State<InicioPage> {
                   _encabezado(),
                   const SizedBox(height: 18),
                   _tarjetaProximaCita(),
+                  const SizedBox(height: 18),
+                  TarjetaAsistenteInicio(
+                    onConversar: _abrirChatbot,
+                    onHablar: _abrirChatVoz,
+                  ),
                   const SizedBox(height: 22),
                   _accionesRapidas(),
                   const SizedBox(height: 22),
@@ -328,7 +346,10 @@ class InicioPageState extends State<InicioPage> {
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: <Color>[CitasColores.azulProfundo, CitasColores.azulPrincipal],
+          colors: <Color>[
+            CitasColores.azulProfundo,
+            CitasColores.azulPrincipal,
+          ],
         ),
         shape: BoxShape.circle,
         boxShadow: <BoxShadow>[
@@ -459,7 +480,10 @@ class InicioPageState extends State<InicioPage> {
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: <Color>[CitasColores.azulProfundo, CitasColores.azulPrincipal],
+          colors: <Color>[
+            CitasColores.azulProfundo,
+            CitasColores.azulPrincipal,
+          ],
         ),
         borderRadius: BorderRadius.circular(24),
         boxShadow: <BoxShadow>[
@@ -560,12 +584,13 @@ class InicioPageState extends State<InicioPage> {
           ),
         ),
         const SizedBox(height: 8),
-        _heroLinea(icono: Icons.schedule, texto: proxima.franja, resaltado: true),
-        const SizedBox(height: 8),
         _heroLinea(
-          icono: Icons.medical_services_outlined,
-          texto: nombreMedico,
+          icono: Icons.schedule,
+          texto: proxima.franja,
+          resaltado: true,
         ),
+        const SizedBox(height: 8),
+        _heroLinea(icono: Icons.medical_services_outlined, texto: nombreMedico),
         if (motivo != null) ...<Widget>[
           const SizedBox(height: 8),
           _heroLinea(icono: Icons.notes_outlined, texto: motivo, tenue: true),
@@ -581,9 +606,7 @@ class InicioPageState extends State<InicioPage> {
     bool resaltado = false,
     bool tenue = false,
   }) {
-    final Color colorTexto = tenue
-        ? const Color(0xFFE8F4FD)
-        : Colors.white;
+    final Color colorTexto = tenue ? const Color(0xFFE8F4FD) : Colors.white;
 
     return Row(
       children: <Widget>[
@@ -677,8 +700,36 @@ class InicioPageState extends State<InicioPage> {
     }
 
     Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const InformacionClinicaPage()),
+    );
+  }
+
+  /// Abre el chat escrito. No crea conversación ni usa el micrófono todavía.
+  void _abrirChatbot() {
+    final VoidCallback? callback = widget.onAbrirChatbot;
+    if (callback != null) {
+      callback();
+      return;
+    }
+
+    Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => const InformacionClinicaPage(),
+        builder: (_) => ChatbotPage(clinica: widget.clinica),
+      ),
+    );
+  }
+
+  /// Abre la experiencia de voz con consentimiento explícito en esa pantalla.
+  void _abrirChatVoz() {
+    final VoidCallback? callback = widget.onAbrirChatVoz;
+    if (callback != null) {
+      callback();
+      return;
+    }
+
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ChatbotPage(clinica: widget.clinica, abrirEnVoz: true),
       ),
     );
   }
@@ -772,12 +823,27 @@ class InicioPageState extends State<InicioPage> {
                 clave: 'inicio-accion-informacion',
                 icono: Icons.medical_information_outlined,
                 titulo: 'Información clínica',
-                subtitulo: 'Servicios y horarios',
+                subtitulo: 'Tu historial y consultas',
                 color: CitasColores.ambar,
                 onTap: _abrirInformacionClinica,
               ),
             ),
           ],
+        ),
+        const SizedBox(height: 12),
+        _AccionRapida(
+          clave: 'inicio-accion-catalogo',
+          icono: Icons.menu_book_outlined,
+          titulo: 'Catálogo de servicios',
+          subtitulo: 'Servicios oftalmológicos disponibles',
+          color: CitasColores.celeste,
+          onTap:
+              widget.onVerCatalogo ??
+              () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => CatalogoPage(clinica: widget.clinica),
+                ),
+              ),
         ),
       ],
     );

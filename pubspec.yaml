@@ -47,6 +47,9 @@ dependencies:
   # Guardar el comprobante con el selector del sistema (SAF en Android),
   # sin solicitar permisos de almacenamiento amplios.
   flutter_file_dialog: ^3.3.3
+  speech_to_text: ^7.5.0
+  flutter_tts: ^4.2.5
+  speech_to_text_platform_interface: ^2.5.0
   firebase_core: ^5.2.0
   firebase_messaging: ^17.1.0
   crypto: ^3.0.8
