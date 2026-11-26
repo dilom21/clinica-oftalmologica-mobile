@@ -1,23 +1,40 @@
 import 'package:flutter/material.dart';
 
-/// Pantalla temporal que se muestra después del inicio de sesión del paciente.
+import '../../valoraciones/models/valoracion_models.dart';
+import '../../valoraciones/pages/valorar_atencion_page.dart';
+import '../../valoraciones/services/valoracion_service.dart';
+
+/// Pantalla de inicio tras la autenticación del paciente.
 ///
-/// Muestra la identidad de Visión Clara y una tarjeta indicando que el sistema
-/// móvil está en construcción. No contiene módulos funcionales todavía.
+/// Además de la identidad de la clínica, verifica automáticamente si existen
+/// avisos post-atención pendientes (CU40) tras finalizar una revisión médica
+/// o recibir una receta, mostrando un mensaje in-app para valorar al médico.
 class InicioPage extends StatefulWidget {
-  const InicioPage({super.key});
+  const InicioPage({
+    super.key,
+    this.valoracionService,
+    this.onAbrirValoraciones,
+    this.onPendientesActualizados,
+  });
+
+  final ValoracionService? valoracionService;
+  final VoidCallback? onAbrirValoraciones;
+  final ValueChanged<int>? onPendientesActualizados;
 
   @override
   State<InicioPage> createState() => _InicioPageState();
 }
 
-class _InicioPageState extends State<InicioPage>
-    with TickerProviderStateMixin {
-  // Colores de la identidad Visión Clara.
+class _InicioPageState extends State<InicioPage> with TickerProviderStateMixin {
   static const Color _azulProfundo = Color(0xFF0D47A1);
   static const Color _azulPrincipal = Color(0xFF1976D2);
 
-  // Controla la animación de entrada escalonada.
+  late final ValoracionService _valoracionService =
+      widget.valoracionService ?? ValoracionService();
+
+  List<NotificacionValoracion> _pendientes = const [];
+  final Set<int> _dialogosMostrados = <int>{};
+
   late final AnimationController _controller = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 800),
@@ -36,13 +53,16 @@ class _InicioPageState extends State<InicioPage>
     curve: const Interval(0.55, 1.0, curve: Curves.easeOutCubic),
   );
 
-  late final Animation<double> _logoScale =
-      Tween<double>(begin: 0.95, end: 1.0).animate(_logoEntrance);
+  late final Animation<double> _logoScale = Tween<double>(
+    begin: 0.95,
+    end: 1.0,
+  ).animate(_logoEntrance);
 
   @override
   void initState() {
     super.initState();
     _controller.forward();
+    _cargarAvisosValoracion();
   }
 
   @override
@@ -51,101 +71,254 @@ class _InicioPageState extends State<InicioPage>
     super.dispose();
   }
 
+  /// Consulta los avisos post-atención del paciente autenticado (silencioso si
+  /// no hay red o sesión todavía).
+  Future<void> _cargarAvisosValoracion() async {
+    try {
+      final pendientes = await _valoracionService.listarPendientes();
+      if (!mounted) return;
+      setState(() {
+        _pendientes = pendientes;
+      });
+      widget.onPendientesActualizados?.call(pendientes.length);
+
+      // Si hay un aviso no leído aún no mostrado en esta sesión, mostrar
+      // el mensaje emergente invitando a valorar la atención recibida.
+      final primerNoLeido = pendientes
+          .where((item) => !item.leida && !_dialogosMostrados.contains(item.consultaClinicaId))
+          .cast<NotificacionValoracion?>()
+          .firstOrNull;
+      if (primerNoLeido != null && mounted) {
+        _dialogosMostrados.add(primerNoLeido.consultaClinicaId);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _mostrarDialogoInvitacionValoracion(primerNoLeido);
+          }
+        });
+      }
+    } catch (_) {
+      // No interrumpe la pantalla de inicio si el servidor no responde.
+    }
+  }
+
+  Future<void> _mostrarDialogoInvitacionValoracion(
+    NotificacionValoracion aviso,
+  ) async {
+    final deseaValorar = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        icon: const Icon(
+          Icons.star_rounded,
+          color: Color(0xFFF59E0B),
+          size: 44,
+        ),
+        title: Text(aviso.titulo, textAlign: TextAlign.center),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              aviso.mensaje,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Color(0xFF5C6F80), height: 1.45),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF0F7FD),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Text(
+                'Dr(a). ${aviso.oftalmologo.nombreCompleto}',
+                style: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  color: _azulProfundo,
+                ),
+              ),
+            ),
+          ],
+        ),
+        actionsAlignment: MainAxisAlignment.end,
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Más tarde'),
+          ),
+          FilledButton.icon(
+            key: const Key('btn_dialogo_valorar_ahora'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            icon: const Icon(Icons.star_rate_rounded, size: 18),
+            label: const Text('Valorar ahora'),
+            style: FilledButton.styleFrom(
+              backgroundColor: _azulPrincipal,
+              foregroundColor: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted) return;
+    if (deseaValorar == true) {
+      await _abrirValoracionDesdeAviso(aviso);
+    } else if (aviso.id != null) {
+      try {
+        await _valoracionService.marcarNotificacionLeida(aviso.id!);
+      } catch (_) {
+        // Ignorado silenciosamente.
+      }
+    }
+  }
+
+  Future<void> _abrirValoracionDesdeAviso(NotificacionValoracion aviso) async {
+    final resultado = await Navigator.of(context).push<ValoracionClinica>(
+      MaterialPageRoute<ValoracionClinica>(
+        builder: (_) => ValorarAtencionPage(
+          consultaClinicaId: aviso.consultaClinicaId,
+          oftalmologo: aviso.oftalmologo,
+          fechaConsulta: aviso.fechaConsulta,
+          motivoConsulta: aviso.motivoConsulta,
+          tieneReceta: aviso.tieneReceta,
+          empresaNombre: aviso.empresaNombre,
+          valoracionService: _valoracionService,
+        ),
+      ),
+    );
+
+    if (resultado != null && mounted) {
+      final mensaje = resultado.mensaje?.trim().isNotEmpty == true
+          ? resultado.mensaje!.trim()
+          : '¡Gracias! Tu valoración fue registrada correctamente.';
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(mensaje),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: const Color(0xFF2E7D32),
+          ),
+        );
+      await _cargarAvisosValoracion();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final nombreClinica =
+        _pendientes.isNotEmpty &&
+            (_pendientes.first.empresaNombre?.trim().isNotEmpty == true)
+        ? _pendientes.first.empresaNombre!.trim()
+        : 'Visión Clara';
+
     return Scaffold(
       body: Stack(
         children: [
-          // Fondo degradado discreto y formas suaves.
           const Positioned.fill(child: _FondoDecorativo()),
-
           SafeArea(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 20,
-                vertical: 32,
-              ),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 420),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const SizedBox(height: 12),
+            child: RefreshIndicator(
+              onRefresh: _cargarAvisosValoracion,
+              color: _azulPrincipal,
+              child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 28,
+                ),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 460),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const SizedBox(height: 8),
 
-                    // Logo con fade + escala.
-                    FadeTransition(
-                      opacity: _logoEntrance,
-                      child: ScaleTransition(
-                        scale: _logoScale,
-                        child: Center(
-                          child: Image.asset(
-                            'assets/images/logo_vision_clara.png',
-                            height: 96,
-                            fit: BoxFit.contain,
+                        // Logo con fade + escala.
+                        FadeTransition(
+                          opacity: _logoEntrance,
+                          child: ScaleTransition(
+                            scale: _logoScale,
+                            child: Center(
+                              child: Image.asset(
+                                'assets/images/logo_vision_clara.png',
+                                height: 92,
+                                fit: BoxFit.contain,
+                              ),
+                            ),
                           ),
                         ),
-                      ),
-                    ),
 
-                    const SizedBox(height: 18),
+                        const SizedBox(height: 16),
 
-                    // Título y subtítulo con fade.
-                    FadeTransition(
-                      opacity: _titleEntrance,
-                      child: Column(
-                        children: [
-                          Text(
-                            'Bienvenido a Visión Clara',
-                            textAlign: TextAlign.center,
-                            style: Theme.of(context)
-                                .textTheme
-                                .headlineSmall
-                                ?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                  color: _azulProfundo,
-                                ),
+                        // Título y subtítulo con fade.
+                        FadeTransition(
+                          opacity: _titleEntrance,
+                          child: Column(
+                            children: [
+                              Text(
+                                'Bienvenido a $nombreClinica',
+                                textAlign: TextAlign.center,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .headlineSmall
+                                    ?.copyWith(
+                                      fontWeight: FontWeight.bold,
+                                      color: _azulProfundo,
+                                    ),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                'Centro Oftalmológico',
+                                textAlign: TextAlign.center,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleMedium
+                                    ?.copyWith(color: const Color(0xFF547799)),
+                              ),
+                            ],
                           ),
-                          const SizedBox(height: 6),
-                          Text(
-                            'Centro Oftalmológico',
-                            textAlign: TextAlign.center,
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleMedium
-                                ?.copyWith(
-                                  color: const Color(0xFF547799),
-                                ),
+                        ),
+
+                        // Mensaje in-app post-atención para valorar al médico
+                        if (_pendientes.isNotEmpty) ...[
+                          const SizedBox(height: 22),
+                          _TarjetaAvisoValoracion(
+                            aviso: _pendientes.first,
+                            totalPendientes: _pendientes.length,
+                            onValorar: () =>
+                                _abrirValoracionDesdeAviso(_pendientes.first),
+                            onVerTodas: widget.onAbrirValoraciones,
                           ),
                         ],
-                      ),
-                    ),
 
-                    const SizedBox(height: 28),
+                        const SizedBox(height: 22),
 
-                    // Tarjeta principal con fade + slide desde abajo.
-                    FadeTransition(
-                      opacity: _cardEntrance,
-                      child: SlideTransition(
-                        position: Tween<Offset>(
-                          begin: const Offset(0, 0.08),
-                          end: Offset.zero,
-                        ).animate(_cardEntrance),
-                        child: _TarjetaBienvenida(
-                          azulProfundo: _azulProfundo,
-                          azulPrincipal: _azulPrincipal,
-                        ),
-                      ),
-                    ),
-
-                    const SizedBox(height: 14),
-                    Text(
-                      'Gracias por utilizar Visión Clara.',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: const Color(0xFF7893A9),
+                        // Tarjeta principal con acceso a valoraciones
+                        FadeTransition(
+                          opacity: _cardEntrance,
+                          child: SlideTransition(
+                            position: Tween<Offset>(
+                              begin: const Offset(0, 0.08),
+                              end: Offset.zero,
+                            ).animate(_cardEntrance),
+                            child: _TarjetaBienvenida(
+                              azulProfundo: _azulProfundo,
+                              azulPrincipal: _azulPrincipal,
+                              onAbrirValoraciones: widget.onAbrirValoraciones,
+                            ),
                           ),
+                        ),
+
+                        const SizedBox(height: 14),
+                        Text(
+                          'Gracias por confiar en $nombreClinica.',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: const Color(0xFF7893A9)),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -156,15 +329,118 @@ class _InicioPageState extends State<InicioPage>
   }
 }
 
-/// Tarjeta principal de bienvenida / estado de construcción.
+/// Banner destacado cuando el paciente tiene una atención finalizada o receta
+/// emitida pendiente de valoración (CU40).
+class _TarjetaAvisoValoracion extends StatelessWidget {
+  const _TarjetaAvisoValoracion({
+    required this.aviso,
+    required this.totalPendientes,
+    required this.onValorar,
+    this.onVerTodas,
+  });
+
+  final NotificacionValoracion aviso;
+  final int totalPendientes;
+  final VoidCallback onValorar;
+  final VoidCallback? onVerTodas;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const Key('banner_aviso_valoracion'),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: const Color(0xFFFDE68A), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFFF59E0B).withValues(alpha: 0.14),
+            blurRadius: 18,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: const BoxDecoration(
+                  color: Color(0xFFFFF8E1),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.notifications_active_rounded,
+                  color: Color(0xFFD97706),
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  aviso.titulo,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF0D47A1),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            aviso.mensaje,
+            style: const TextStyle(
+              fontSize: 13.5,
+              color: Color(0xFF5C6F80),
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 14),
+          FilledButton.icon(
+            key: const Key('btn_banner_valorar_ahora'),
+            onPressed: onValorar,
+            icon: const Icon(Icons.star_rounded, size: 20),
+            label: const Text('Valorar atención ahora'),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF1976D2),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
+          ),
+          if (totalPendientes > 1 && onVerTodas != null) ...[
+            const SizedBox(height: 6),
+            TextButton(
+              onPressed: onVerTodas,
+              child: Text(
+                'Ver todas las pendientes ($totalPendientes)',
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Tarjeta principal de bienvenida con acceso directo a valoraciones.
 class _TarjetaBienvenida extends StatelessWidget {
   const _TarjetaBienvenida({
     required this.azulProfundo,
     required this.azulPrincipal,
+    this.onAbrirValoraciones,
   });
 
   final Color azulProfundo;
   final Color azulPrincipal;
+  final VoidCallback? onAbrirValoraciones;
 
   @override
   Widget build(BuildContext context) {
@@ -181,16 +457,15 @@ class _TarjetaBienvenida extends StatelessWidget {
         ],
       ),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 34),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
         child: Column(
           children: [
-            // Icono de visión dentro de un círculo suave.
             Container(
-              width: 84,
-              height: 84,
-              decoration: BoxDecoration(
+              width: 78,
+              height: 78,
+              decoration: const BoxDecoration(
                 shape: BoxShape.circle,
-                gradient: const LinearGradient(
+                gradient: LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                   colors: [Color(0xFFD6ECFA), Color(0xFFB7E3F9)],
@@ -198,34 +473,44 @@ class _TarjetaBienvenida extends StatelessWidget {
               ),
               child: Icon(
                 Icons.visibility_outlined,
-                size: 44,
+                size: 40,
                 color: azulProfundo.withValues(alpha: 0.85),
               ),
             ),
-
-            const SizedBox(height: 22),
-
+            const SizedBox(height: 18),
             Text(
-              'Sistema móvil\nen construcción',
+              'Tu salud visual,\nsiempre acompañada',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: azulProfundo,
-                    height: 1.25,
-                  ),
+                fontWeight: FontWeight.bold,
+                color: azulProfundo,
+                height: 1.25,
+              ),
             ),
-
-            const SizedBox(height: 14),
-
+            const SizedBox(height: 10),
             Text(
-              'Estamos preparando nuevas funcionalidades '
-              'para brindarte una mejor experiencia.',
+              'Consulta horarios médicos, gestiona tus pagos y comparte tu valoración después de cada atención recibida.',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: const Color(0xFF5C6F80),
-                    height: 1.45,
-                  ),
+                color: const Color(0xFF5C6F80),
+                height: 1.45,
+              ),
             ),
+            if (onAbrirValoraciones != null) ...[
+              const SizedBox(height: 18),
+              OutlinedButton.icon(
+                onPressed: onAbrirValoraciones,
+                icon: const Icon(Icons.star_outline_rounded),
+                label: const Text('Ir a mis valoraciones'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: azulPrincipal,
+                  side: BorderSide(color: azulPrincipal),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -233,7 +518,6 @@ class _TarjetaBienvenida extends StatelessWidget {
   }
 }
 
-/// Fondo con degradado suave y formas abstractas discretas.
 class _FondoDecorativo extends StatelessWidget {
   const _FondoDecorativo();
 
@@ -256,8 +540,6 @@ class _FondoDecorativo extends StatelessWidget {
             ),
           ),
         ),
-
-        // Forma grande azul en la parte superior derecha.
         Positioned(
           top: -70,
           right: -80,
@@ -266,8 +548,6 @@ class _FondoDecorativo extends StatelessWidget {
             color: const Color(0xFF1976D2).withValues(alpha: 0.10),
           ),
         ),
-
-        // Forma celeste abajo izquierda.
         Positioned(
           bottom: -60,
           left: -90,
@@ -276,8 +556,6 @@ class _FondoDecorativo extends StatelessWidget {
             color: const Color(0xFF4FC3F7).withValues(alpha: 0.10),
           ),
         ),
-
-        // Anillo tipo lente (guiño a la visión) arriba izquierda.
         Positioned(
           top: 60,
           left: -60,
@@ -298,7 +576,6 @@ class _FondoDecorativo extends StatelessWidget {
   }
 }
 
-/// Forma circular con gradiente radial (luz suave).
 class _FormaCircular extends StatelessWidget {
   final double size;
   final Color color;
@@ -320,4 +597,3 @@ class _FormaCircular extends StatelessWidget {
     );
   }
 }
-

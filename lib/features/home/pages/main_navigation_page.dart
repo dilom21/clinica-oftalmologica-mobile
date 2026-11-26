@@ -4,14 +4,17 @@ import 'inicio_page.dart';
 import '../../citas/pages/citas_page.dart';
 import '../../pagos/pages/pagos_page.dart';
 import '../../perfil_paciente/pages/perfil_page.dart';
+import '../../valoraciones/pages/valoraciones_page.dart';
 
 /// Contenedor principal del área autenticada (pacientes).
 ///
 /// Responsabilidades:
 /// - mantener UNA sola NavigationBar inferior (Material 3)
 /// - manejar el índice seleccionado
-/// - alternar entre Inicio, Citas, Pagos y Perfil sin recrear las páginas
-///   (IndexedStack conserva su estado y evita peticiones innecesarias).
+/// - alternar entre Inicio, Citas, Pagos, Valoraciones y Perfil sin recrear
+///   las páginas (IndexedStack conserva su estado).
+/// - mostrar un indicador (badge) en Valoraciones cuando existen atenciones
+///   pendientes por calificar (CU40).
 class MainNavigationPage extends StatefulWidget {
   const MainNavigationPage({super.key});
 
@@ -21,14 +24,40 @@ class MainNavigationPage extends StatefulWidget {
 
 class _MainNavigationPageState extends State<MainNavigationPage> {
   int _selectedIndex = 0;
+  int _pendientesValoracion = 0;
 
-  // Construidas una sola vez: cada tab conserva su estado al navegar.
-  static const List<Widget> _pages = [
-    InicioPage(),
-    CitasPage(),
-    PagosPage(),
-    PerfilPage(),
+  void _actualizarPendientes(int cantidad) {
+    if (!mounted || _pendientesValoracion == cantidad) return;
+    setState(() {
+      _pendientesValoracion = cantidad;
+    });
+  }
+
+  void _irAValoraciones() {
+    if (!mounted) return;
+    setState(() {
+      _selectedIndex = 3;
+    });
+  }
+
+  late final List<Widget> _pages = [
+    InicioPage(
+      onAbrirValoraciones: _irAValoraciones,
+      onPendientesActualizados: _actualizarPendientes,
+    ),
+    const CitasPage(),
+    const PagosPage(),
+    ValoracionesPage(onPendientesActualizados: _actualizarPendientes),
+    const PerfilPage(),
   ];
+
+  Widget _iconoValoraciones({required bool seleccionado}) {
+    final icono = Icon(seleccionado ? Icons.star : Icons.star_outline);
+    if (_pendientesValoracion <= 0) {
+      return icono;
+    }
+    return Badge.count(count: _pendientesValoracion, child: icono);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -65,7 +94,7 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
             ) {
               final seleccionado = states.contains(WidgetState.selected);
               return TextStyle(
-                fontSize: 12,
+                fontSize: 11.5,
                 fontWeight: seleccionado ? FontWeight.w600 : FontWeight.w500,
                 color: seleccionado
                     ? const Color(0xFF0D47A1)
@@ -81,23 +110,28 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
               });
             },
             height: 68,
-            destinations: const [
-              NavigationDestination(
+            destinations: [
+              const NavigationDestination(
                 icon: Icon(Icons.home_outlined),
                 selectedIcon: Icon(Icons.home),
                 label: 'Inicio',
               ),
-              NavigationDestination(
+              const NavigationDestination(
                 icon: Icon(Icons.calendar_month_outlined),
                 selectedIcon: Icon(Icons.calendar_month),
                 label: 'Citas',
               ),
-              NavigationDestination(
+              const NavigationDestination(
                 icon: Icon(Icons.payments_outlined),
                 selectedIcon: Icon(Icons.payments),
                 label: 'Pagos',
               ),
               NavigationDestination(
+                icon: _iconoValoraciones(seleccionado: false),
+                selectedIcon: _iconoValoraciones(seleccionado: true),
+                label: 'Valorar',
+              ),
+              const NavigationDestination(
                 icon: Icon(Icons.person_outline),
                 selectedIcon: Icon(Icons.person),
                 label: 'Perfil',
